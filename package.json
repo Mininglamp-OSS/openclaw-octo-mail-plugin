@@ -1,0 +1,66 @@
+{
+  "name": "openclaw-octo-mail-plugin",
+  "version": "0.1.0",
+  "description": "OpenClaw runtime plugin for OCTO Agent Mail",
+  "license": "UNLICENSED",
+  "private": false,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:installer": "npm --prefix installer test",
+    "prepack": "npm run build",
+    "pack:check": "npm pack --dry-run",
+    "check": "npm run typecheck && npm run test && npm run test:installer && npm run build"
+  },
+  "peerDependencies": {
+    "openclaw": "2026.7.1"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "typebox": "1.3.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.0",
+    "openclaw": "2026.7.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.9"
+  },
+  "engines": {
+    "node": ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
+  },
+  "openclaw": {
+    "id": "octo-mail",
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": "2026.7.1"
+    },
+    "build": {
+      "openclawVersion": "2026.7.1"
+    }
+  }
+}

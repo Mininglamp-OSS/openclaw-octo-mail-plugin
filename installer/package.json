@@ -1,0 +1,22 @@
+{
+  "name": "create-openclaw-octo-mail",
+  "version": "0.1.0",
+  "description": "Thin installer and binding launcher for OCTO Agent Mail",
+  "license": "UNLICENSED",
+  "private": false,
+  "type": "module",
+  "files": [
+    "bin",
+    "lib"
+  ],
+  "bin": {
+    "create-openclaw-octo-mail": "./bin/create-openclaw-octo-mail.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.node.mjs",
+    "pack:check": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=22.22.3"
+  }
+}

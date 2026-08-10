@@ -1,0 +1,20 @@
+node_modules/
+dist/
+coverage/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+.octo-mail-poc/
+
+# Internal development/governance material is kept locally and is not part of
+# the production plugin repository.
+AGENTS.md
+DEVELOPMENT.md
+.local-notes/
+SECURITY.md
+docs/
+scripts/poc/
+src/poc/
+src/discovery/poc-*.ts

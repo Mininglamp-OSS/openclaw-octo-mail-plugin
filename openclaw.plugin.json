@@ -1,0 +1,168 @@
+{
+  "id": "octo-mail",
+  "name": "OCTO Agent Mail",
+  "description": "Long-running OpenClaw integration for OCTO Agent Mail",
+  "contracts": {
+    "tools": [
+      "mail_get_message",
+      "mail_reply",
+      "mail_send",
+      "mail_auto_reply",
+      "mail_confirm_send",
+      "mail_cancel_send",
+      "mail_connect",
+      "mail_connection_status"
+    ]
+  },
+  "toolMetadata": {
+    "mail_get_message": {
+      "optional": true
+    },
+    "mail_reply": {
+      "optional": true
+    },
+    "mail_send": {
+      "optional": true
+    },
+    "mail_auto_reply": {
+      "optional": true
+    },
+    "mail_confirm_send": {
+      "optional": true
+    },
+    "mail_cancel_send": {
+      "optional": true
+    },
+    "mail_connect": {
+      "optional": true
+    },
+    "mail_connection_status": {
+      "optional": true
+    }
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "discovery": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable long-running JMAP discovery for automatically discovered Plugin Accounts"
+          },
+          "pollIntervalMs": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 300000,
+            "default": 5000,
+            "description": "Fallback Email/changes polling interval when JMAP EventSource is unavailable"
+          },
+          "maxChanges": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 100,
+            "description": "Maximum Email/changes records requested per page"
+          }
+        }
+      },
+      "accounts": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 32,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "pluginAccountId",
+            "agentId",
+            "botId",
+            "apiBaseUrl",
+            "credentialRef"
+          ],
+          "properties": {
+            "pluginAccountId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "agentId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "botId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "botProfile": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "apiBaseUrl": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Public OCTO origin without credentials or path"
+            },
+            "credentialRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["source", "provider", "id"],
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "enum": ["file"]
+                },
+                "provider": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "id": {
+                  "type": "string",
+                  "enum": ["value"]
+                }
+              }
+            },
+            "discovery": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "pollIntervalMs": {
+                  "type": "integer",
+                  "minimum": 1000,
+                  "maximum": 300000,
+                  "default": 5000
+                },
+                "maxChanges": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000,
+                  "default": 100
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
