@@ -1,0 +1,5 @@
+# Code owners are requested for review automatically on every pull request.
+# The team must keep write access to this repository, otherwise the entry is
+# silently ignored by GitHub.
+
+*   @Mininglamp-OSS/maintainers
