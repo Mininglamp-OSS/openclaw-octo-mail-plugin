@@ -161,6 +161,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
           },
           workflowState,
           ownerDraftNotifier,
+          confirmationAuthorityAvailable: fullRegistration,
         }),
         {
           names: [
@@ -168,8 +169,9 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
             MAIL_REPLY_TOOL_NAME,
             MAIL_SEND_TOOL_NAME,
             MAIL_AUTO_REPLY_TOOL_NAME,
-            MAIL_CONFIRM_SEND_TOOL_NAME,
-            MAIL_CANCEL_SEND_TOOL_NAME,
+            ...(fullRegistration
+              ? [MAIL_CONFIRM_SEND_TOOL_NAME, MAIL_CANCEL_SEND_TOOL_NAME]
+              : []),
           ],
           optional: true,
         },

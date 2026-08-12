@@ -34,6 +34,13 @@ export function createAccountMailToolFactory(options: {
   ) => PluginAccountRuntime | Promise<PluginAccountRuntime>;
   workflowState?: MailWorkflowStateStore;
   ownerDraftNotifier?: OpenClawOwnerDraftNotifier;
+  /**
+   * True only in the full registration that also owns the confirmation hooks.
+   * Tool-discovery registrations can execute tools but have no matching
+   * in-memory approval authority, so they must never expose confirmation or
+   * cancellation actions.
+   */
+  confirmationAuthorityAvailable?: boolean;
 }): OpenClawPluginToolFactory {
   return (context) => {
     const agentId = context.agentId?.trim();
@@ -72,7 +79,8 @@ export function createAccountMailToolFactory(options: {
       createMailSendTool({
         client,
         simulated: false,
-        ...(context.senderIsOwner === true &&
+        ...(options.confirmationAuthorityAvailable === true &&
+        context.senderIsOwner === true &&
         context.sessionKey?.includes(":direct:") === true
           ? { onOwnerConfirmationDraft: async (draft) => {
           if (options.workflowState === undefined) {
@@ -105,6 +113,7 @@ export function createAccountMailToolFactory(options: {
       );
     }
     if (
+      options.confirmationAuthorityAvailable === true &&
       context.sessionKey !== undefined &&
       context.sessionKey.includes(":direct:") &&
       options.workflowState !== undefined

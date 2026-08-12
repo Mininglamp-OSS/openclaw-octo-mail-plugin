@@ -335,6 +335,7 @@ describe("account-aware Mail Tool factory", () => {
       ensureRuntimeStarted: vi.fn(async () => undefined),
       activateStoredRuntime,
       workflowState,
+      confirmationAuthorityAvailable: true,
     });
     const tools = factory({
       agentId: "mail-agent",
@@ -380,6 +381,45 @@ describe("account-aware Mail Tool factory", () => {
       senderAddress: "support@mail.imocto.cn",
       realEmailSent: true,
     });
+  });
+
+  it("withholds confirmation tools when no hook authority is registered", () => {
+    const catalog = accountCatalog("MyBot");
+    const runtime = {
+      config: catalog.getById("support"),
+      client: {},
+      mailboxAddress: "support@example.test",
+      mailAccountId: "42",
+      inboxMailboxId: "inbox",
+    };
+    const workflowState = {
+      savePending: vi.fn(async () => undefined),
+      getPending: vi.fn(async () => undefined),
+      clearPending: vi.fn(async () => undefined),
+      notificationDelivered: vi.fn(async () => false),
+      markNotificationDelivered: vi.fn(async () => undefined),
+    } satisfies MailWorkflowStateStore;
+    const factory = createAccountMailToolFactory({
+      catalog,
+      runtimes: {
+        getById: vi.fn(() => runtime),
+      } as unknown as PluginAccountRuntimeRegistry,
+      ensureRuntimeStarted: vi.fn(async () => undefined),
+      activateStoredRuntime: vi.fn(
+        async () => runtime as unknown as PluginAccountRuntime,
+      ),
+      workflowState,
+      confirmationAuthorityAvailable: false,
+    });
+
+    const tools = factory({
+      agentId: "mail-agent",
+      sessionKey: "agent:mail-agent:octo:bot-support:direct:owner",
+      senderIsOwner: true,
+    } as OpenClawPluginToolContext) as AnyAgentTool[];
+
+    expect(tools.map((tool) => tool.name)).not.toContain("mail_confirm_send");
+    expect(tools.map((tool) => tool.name)).not.toContain("mail_cancel_send");
   });
 
   it("rejects a pending Draft from a different Plugin Account", async () => {
@@ -524,6 +564,7 @@ function createConfirmationHarness(options: {
       async () => runtime as unknown as PluginAccountRuntime,
     ),
     workflowState,
+    confirmationAuthorityAvailable: true,
   });
   const tools = factory({
     agentId: "mail-agent",
