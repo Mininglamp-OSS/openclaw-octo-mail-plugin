@@ -82,10 +82,13 @@ export interface MailSendInputView {
 }
 
 export interface MailConfirmationToolOptions {
-  client: MailClient;
   workflowState: MailWorkflowStateStore;
   agentId: string;
   sessionKey: string;
+  deliverOwnerDraft: (
+    pending: PendingMailConfirmation,
+    signal?: AbortSignal,
+  ) => Promise<MailWriteAccepted>;
 }
 
 export function createMailGetMessageTool(
@@ -259,19 +262,14 @@ export function createMailConfirmSendTool(
       "Internal OCTO Mail action. Use only after the trusted owner entered the exact confirmation command for the current session.",
     parameters: Type.Object({}, { additionalProperties: false }),
     executionMode: "sequential",
-    async execute(toolCallId, _params, signal) {
+    async execute(_toolCallId, _params, signal) {
       // The standard OpenClaw before_tool_call hook is the sole authority for
       // the exact trusted-owner confirmation turn. Tool discovery is a
       // separate plugin registration, so duplicating an in-memory grant here
       // would compare state from two different plugin instances.
       const pending = await requirePendingConfirmation(options);
-      const result = await options.client.confirmDraft(
-        pending.draftId,
-        pending.draftVersion,
-        signal,
-        `mail-confirm:${toolCallId}:${pending.draftId}:${String(pending.draftVersion)}`,
-      );
-      await options.workflowState.clearPending(options.sessionKey);
+      const result = await options.deliverOwnerDraft(pending, signal);
+      await options.workflowState.clearPending(pending);
       return {
         content: [
           {
@@ -305,7 +303,7 @@ export function createMailCancelSendTool(
     executionMode: "sequential",
     async execute() {
       const pending = await requirePendingConfirmation(options);
-      await options.workflowState.clearPending(options.sessionKey);
+      await options.workflowState.clearPending(pending);
       return {
         content: [
           {

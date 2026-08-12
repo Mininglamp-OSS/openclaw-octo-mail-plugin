@@ -110,11 +110,14 @@ export interface MailClient {
     signal?: AbortSignal,
     intentId?: string,
   ): Promise<MailWriteResult>;
-  confirmDraft(
+}
+
+/** Production-only scoped delivery of one already prepared Draft version. */
+export interface MailDraftDeliveryClient {
+  sendPreparedDraft(
     draftId: string,
     draftVersion: number,
     signal?: AbortSignal,
-    intentId?: string,
   ): Promise<MailWriteAccepted>;
 }
 

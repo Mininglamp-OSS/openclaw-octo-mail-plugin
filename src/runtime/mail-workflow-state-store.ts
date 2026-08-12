@@ -11,6 +11,7 @@ export interface PendingMailConfirmation {
   sessionKey: string;
   agentId: string;
   pluginAccountId: string;
+  mailAccountId?: string;
   draftId: string;
   draftVersion: number;
   createdAt: string;
@@ -25,7 +26,9 @@ interface MailWorkflowState {
 export interface MailWorkflowStateStore {
   savePending(value: PendingMailConfirmation): Promise<void>;
   getPending(sessionKey: string): Promise<PendingMailConfirmation | undefined>;
-  clearPending(sessionKey: string): Promise<PendingMailConfirmation | undefined>;
+  clearPending(
+    expected: PendingMailConfirmation,
+  ): Promise<PendingMailConfirmation | undefined>;
   notificationDelivered(notificationId: string): Promise<boolean>;
   markNotificationDelivered(notificationId: string): Promise<void>;
 }
@@ -58,15 +61,15 @@ export class FileMailWorkflowStateStore implements MailWorkflowStateStore {
   }
 
   async clearPending(
-    sessionKey: string,
+    expected: PendingMailConfirmation,
   ): Promise<PendingMailConfirmation | undefined> {
-    requireKey(sessionKey, "sessionKey");
+    validatePending(expected);
     let removed: PendingMailConfirmation | undefined;
     await this.#mutate((state) => {
-      const value = state.pendingBySession[sessionKey];
-      if (value !== undefined) {
+      const value = state.pendingBySession[expected.sessionKey];
+      if (value !== undefined && samePending(value, expected)) {
         removed = { ...value };
-        delete state.pendingBySession[sessionKey];
+        delete state.pendingBySession[expected.sessionKey];
       }
     });
     return removed;
@@ -148,6 +151,21 @@ export class FileMailWorkflowStateStore implements MailWorkflowStateStore {
   }
 }
 
+function samePending(
+  current: PendingMailConfirmation,
+  expected: PendingMailConfirmation,
+): boolean {
+  return (
+    current.sessionKey === expected.sessionKey &&
+    current.agentId === expected.agentId &&
+    current.pluginAccountId === expected.pluginAccountId &&
+    current.mailAccountId === expected.mailAccountId &&
+    current.draftId === expected.draftId &&
+    current.draftVersion === expected.draftVersion &&
+    current.createdAt === expected.createdAt
+  );
+}
+
 function emptyState(): MailWorkflowState {
   return {
     version: STATE_VERSION,
@@ -170,10 +188,12 @@ function validateState(value: unknown): MailWorkflowState {
     if (!isRecord(pending)) {
       throw new Error("mail workflow pending confirmation is invalid");
     }
+    const mailAccountId = readOptionalString(pending, "mailAccountId");
     const normalized = {
       sessionKey: readString(pending, "sessionKey"),
       agentId: readString(pending, "agentId"),
       pluginAccountId: readString(pending, "pluginAccountId"),
+      ...(mailAccountId === undefined ? {} : { mailAccountId }),
       draftId: readString(pending, "draftId"),
       draftVersion: readPositiveInteger(pending, "draftVersion"),
       createdAt: readString(pending, "createdAt"),
@@ -205,6 +225,9 @@ function validatePending(value: PendingMailConfirmation): void {
   requireKey(value.sessionKey, "sessionKey");
   requireKey(value.agentId, "agentId");
   requireKey(value.pluginAccountId, "pluginAccountId");
+  if (value.mailAccountId !== undefined) {
+    requireKey(value.mailAccountId, "mailAccountId");
+  }
   requireKey(value.draftId, "draftId");
   if (!Number.isSafeInteger(value.draftVersion) || value.draftVersion <= 0) {
     throw new Error("draftVersion must be a positive integer");
@@ -222,6 +245,18 @@ function requireKey(value: string, name: string): void {
 
 function readString(value: Record<string, unknown>, key: string): string {
   const item = value[key];
+  if (typeof item !== "string") {
+    throw new Error(`mail workflow ${key} is invalid`);
+  }
+  return item;
+}
+
+function readOptionalString(
+  value: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const item = value[key];
+  if (item === undefined) return undefined;
   if (typeof item !== "string") {
     throw new Error(`mail workflow ${key} is invalid`);
   }

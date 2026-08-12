@@ -14,7 +14,10 @@ import {
   PluginAccountRoutingError,
 } from "../accounts/plugin-account.js";
 import { TEST_OCTO_ORIGIN } from "../testing/test-values.js";
-import type { MailWorkflowStateStore } from "../runtime/mail-workflow-state-store.js";
+import type {
+  MailWorkflowStateStore,
+  PendingMailConfirmation,
+} from "../runtime/mail-workflow-state-store.js";
 import { createAccountMailToolFactory } from "./account-mail-tools.js";
 
 describe("account-aware Mail Tool factory", () => {
@@ -282,7 +285,7 @@ describe("account-aware Mail Tool factory", () => {
   });
 
   it("persists a prepared Draft and confirms only the saved session version", async () => {
-    const catalog = accountCatalog();
+    const catalog = accountCatalog("MyBot");
     const send = vi.fn(async () => ({
       outcome: "owner_confirmation_required" as const,
       status: "pending_confirmation" as const,
@@ -292,7 +295,7 @@ describe("account-aware Mail Tool factory", () => {
       senderAddress: "support@example.test",
       draftVersion: 1,
     }));
-    const confirmDraft = vi.fn(async () => ({
+    const sendPreparedDraft = vi.fn(async () => ({
       outcome: "accepted" as const,
       messageId: "E56",
       submissionIds: ["Q1"],
@@ -300,11 +303,17 @@ describe("account-aware Mail Tool factory", () => {
     }));
     const runtime = {
       config: catalog.getById("support"),
-      client: { send, confirmDraft },
+      client: { send, sendPreparedDraft },
       mailboxAddress: "support@example.test",
-      mailAccountId: "mail-support",
+      mailAccountId: "42",
       inboxMailboxId: "inbox",
     };
+    const runtimes = {
+      getById: vi.fn(() => runtime),
+    } as unknown as PluginAccountRuntimeRegistry;
+    const activateStoredRuntime = vi.fn(
+      async () => runtime as unknown as PluginAccountRuntime,
+    );
     let pending: Awaited<ReturnType<MailWorkflowStateStore["getPending"]>>;
     const workflowState = {
       savePending: vi.fn(async (value) => {
@@ -322,11 +331,9 @@ describe("account-aware Mail Tool factory", () => {
     const sessionKey = "agent:mail-agent:octo:bot-support:direct:owner";
     const factory = createAccountMailToolFactory({
       catalog,
-      runtimes: {
-        getById: vi.fn(() => runtime),
-      } as unknown as PluginAccountRuntimeRegistry,
+      runtimes,
       ensureRuntimeStarted: vi.fn(async () => undefined),
-      activateStoredRuntime: vi.fn(async () => runtime as unknown as PluginAccountRuntime),
+      activateStoredRuntime,
       workflowState,
     });
     const tools = factory({
@@ -349,23 +356,21 @@ describe("account-aware Mail Tool factory", () => {
     expect(workflowState.savePending).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionKey,
+        mailAccountId: "42",
         draftId: "E55",
         draftVersion: 1,
       }),
     );
-
     const confirmed = await tools.find((tool) => tool.name === "mail_confirm_send")!.execute(
       "confirm-55",
       {},
       undefined,
     );
-    expect(confirmDraft).toHaveBeenCalledWith(
-      "E55",
-      1,
-      undefined,
-      expect.stringContaining("mail-confirm:confirm-55:E55:1"),
+    expect(sendPreparedDraft).toHaveBeenCalledWith("E55", 1, undefined);
+    expect(activateStoredRuntime).not.toHaveBeenCalled();
+    expect(workflowState.clearPending).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionKey, draftId: "E55", draftVersion: 1 }),
     );
-    expect(workflowState.clearPending).toHaveBeenCalledWith(sessionKey);
     expect(confirmed.content[0]).toMatchObject({
       text: expect.stringContaining(
         "发件邮箱：support@mail.imocto.cn",
@@ -376,16 +381,68 @@ describe("account-aware Mail Tool factory", () => {
       realEmailSent: true,
     });
   });
+
+  it("rejects a pending Draft from a different Plugin Account", async () => {
+    const harness = createConfirmationHarness({
+      pendingPluginAccountId: "other",
+    });
+
+    await expect(harness.confirm()).rejects.toThrow(
+      "Pending mail Draft belongs to a different Plugin Account.",
+    );
+    expect(harness.runtimes.getById).not.toHaveBeenCalled();
+    expect(harness.sendPreparedDraft).not.toHaveBeenCalled();
+    expect(harness.workflowState.clearPending).not.toHaveBeenCalled();
+  });
+
+  it("rejects a pending Draft from a replaced Mail Account", async () => {
+    const harness = createConfirmationHarness({
+      pendingMailAccountId: "41",
+    });
+
+    await expect(harness.confirm()).rejects.toThrow(
+      "Pending mail Draft belongs to a different Mail Account.",
+    );
+    expect(harness.runtimes.getById).toHaveBeenCalledWith("support");
+    expect(harness.sendPreparedDraft).not.toHaveBeenCalled();
+    expect(harness.workflowState.clearPending).not.toHaveBeenCalled();
+  });
+
+  it("preserves pending state when scoped Draft delivery fails", async () => {
+    const sendPreparedDraft = vi.fn(async () => {
+      throw new Error("delivery outcome unknown");
+    });
+    const harness = createConfirmationHarness({ sendPreparedDraft });
+
+    await expect(harness.confirm()).rejects.toThrow("delivery outcome unknown");
+    expect(harness.workflowState.clearPending).not.toHaveBeenCalled();
+    await expect(
+      harness.workflowState.getPending(harness.sessionKey),
+    ).resolves.toMatchObject({ draftId: "E55", mailAccountId: "42" });
+  });
+
+  it("rejects legacy pending state without a Mail Account binding", async () => {
+    const harness = createConfirmationHarness({
+      pendingMailAccountId: undefined,
+    });
+
+    await expect(harness.confirm()).rejects.toThrow(
+      "Pending mail Draft is missing its Mail Account binding.",
+    );
+    expect(harness.runtimes.getById).not.toHaveBeenCalled();
+    expect(harness.sendPreparedDraft).not.toHaveBeenCalled();
+    expect(harness.workflowState.clearPending).not.toHaveBeenCalled();
+  });
 });
 
-function accountCatalog(): PluginAccountCatalog {
+function accountCatalog(botId = "bot-support"): PluginAccountCatalog {
   return new PluginAccountCatalog(
     parseReliablePluginConfig({
       accounts: [
         {
           pluginAccountId: "support",
           agentId: "mail-agent",
-          botId: "bot-support",
+          botId,
           apiBaseUrl: TEST_OCTO_ORIGIN,
           credentialRef: {
             source: "file",
@@ -396,4 +453,90 @@ function accountCatalog(): PluginAccountCatalog {
       ],
     }).accounts,
   );
+}
+
+function createConfirmationHarness(options: {
+  pendingPluginAccountId?: string;
+  pendingMailAccountId?: string | undefined;
+  sendPreparedDraft?: ReturnType<typeof vi.fn>;
+} = {}) {
+  const catalog = accountCatalog();
+  const sessionKey = "agent:mail-agent:octo:bot-support:direct:owner";
+  const sendPreparedDraft =
+    options.sendPreparedDraft ??
+    vi.fn(async () => ({
+      outcome: "accepted" as const,
+      messageId: "E56",
+      submissionIds: ["Q1"],
+    }));
+  const runtime = {
+    config: catalog.getById("support"),
+    client: { sendPreparedDraft },
+    mailboxAddress: "support@example.test",
+    mailAccountId: "42",
+    inboxMailboxId: "inbox",
+  };
+  const runtimes = {
+    getById: vi.fn(() => runtime),
+  } as unknown as PluginAccountRuntimeRegistry;
+  const hasPendingMailAccountId = Object.prototype.hasOwnProperty.call(
+    options,
+    "pendingMailAccountId",
+  );
+  let pending: PendingMailConfirmation | undefined = {
+    sessionKey,
+    agentId: "mail-agent",
+    pluginAccountId: options.pendingPluginAccountId ?? "support",
+    ...(hasPendingMailAccountId
+      ? options.pendingMailAccountId === undefined
+        ? {}
+        : { mailAccountId: options.pendingMailAccountId }
+      : { mailAccountId: "42" }),
+    draftId: "E55",
+    draftVersion: 1,
+    createdAt: "2026-08-11T00:00:00.000Z",
+  };
+  const workflowState = {
+    savePending: vi.fn(async (value: PendingMailConfirmation) => {
+      pending = value;
+    }),
+    getPending: vi.fn(async (_sessionKey: string) => pending),
+    clearPending: vi.fn(async (expected: PendingMailConfirmation) => {
+      if (
+        pending?.sessionKey !== expected.sessionKey ||
+        pending.draftId !== expected.draftId ||
+        pending.draftVersion !== expected.draftVersion
+      ) {
+        return undefined;
+      }
+      const value = pending;
+      pending = undefined;
+      return value;
+    }),
+    notificationDelivered: vi.fn(async () => false),
+    markNotificationDelivered: vi.fn(async () => undefined),
+  } satisfies MailWorkflowStateStore;
+  const factory = createAccountMailToolFactory({
+    catalog,
+    runtimes,
+    ensureRuntimeStarted: vi.fn(async () => undefined),
+    activateStoredRuntime: vi.fn(
+      async () => runtime as unknown as PluginAccountRuntime,
+    ),
+    workflowState,
+  });
+  const tools = factory({
+    agentId: "mail-agent",
+    sessionKey,
+    senderIsOwner: true,
+  } as OpenClawPluginToolContext) as AnyAgentTool[];
+  const confirmTool = tools.find((tool) => tool.name === "mail_confirm_send")!;
+
+  return {
+    sessionKey,
+    runtimes,
+    sendPreparedDraft,
+    workflowState,
+    confirm: () => confirmTool.execute("confirm-55", {}, undefined),
+  };
 }
