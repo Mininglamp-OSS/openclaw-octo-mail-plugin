@@ -303,7 +303,23 @@ export function createMailCancelSendTool(
     executionMode: "sequential",
     async execute() {
       const pending = await requirePendingConfirmation(options);
-      await options.workflowState.clearPending(pending);
+      const cleared = await options.workflowState.clearPending(pending);
+      if (cleared === undefined) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "待取消的邮件草稿已发生变化或已被处理，本次没有取消任何待发送草稿。请重新查看当前状态。",
+            },
+          ],
+          details: {
+            outcome: "cancel_not_applied",
+            draftId: pending.draftId,
+            draftVersion: pending.draftVersion,
+            cancellationApplied: false,
+          },
+        };
+      }
       return {
         content: [
           {

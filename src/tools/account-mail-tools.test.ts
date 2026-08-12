@@ -461,6 +461,21 @@ describe("account-aware Mail Tool factory", () => {
     ).resolves.toMatchObject({ draftId: "E55", mailAccountId: "42" });
   });
 
+  it("does not claim cancellation when the pending Draft changed", async () => {
+    const harness = createConfirmationHarness();
+    harness.workflowState.clearPending.mockResolvedValueOnce(undefined);
+
+    const result = await harness.cancel();
+
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining("本次没有取消任何待发送草稿"),
+    });
+    expect(result.details).toMatchObject({
+      outcome: "cancel_not_applied",
+      cancellationApplied: false,
+    });
+  });
+
   it("rejects legacy pending state without a Mail Account binding", async () => {
     const harness = createConfirmationHarness({
       pendingMailAccountId: undefined,
@@ -572,6 +587,7 @@ function createConfirmationHarness(options: {
     senderIsOwner: true,
   } as OpenClawPluginToolContext) as AnyAgentTool[];
   const confirmTool = tools.find((tool) => tool.name === "mail_confirm_send")!;
+  const cancelTool = tools.find((tool) => tool.name === "mail_cancel_send")!;
 
   return {
     sessionKey,
@@ -579,5 +595,6 @@ function createConfirmationHarness(options: {
     sendPreparedDraft,
     workflowState,
     confirm: () => confirmTool.execute("confirm-55", {}, undefined),
+    cancel: () => cancelTool.execute("cancel-55", {}, undefined),
   };
 }

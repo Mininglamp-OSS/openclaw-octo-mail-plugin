@@ -729,7 +729,11 @@ export class AgentMailApiClient
         body = JSON.parse(raw);
       } catch (cause) {
         if (!response.ok) {
-          throw nonJsonHttpResponseError(response.status, cause);
+          throw nonJsonHttpResponseError(
+            response.status,
+            httpFailureOutcome(response.status, transportFailureOutcome),
+            cause,
+          );
         }
         throw new MailClientError({
           code: "invalid_json_response",
@@ -774,6 +778,7 @@ export class AgentMailApiClient
 
 function nonJsonHttpResponseError(
   status: number,
+  outcome: "not-sent" | "unknown",
   cause: unknown,
 ): MailClientError {
   if (status === 401) {
@@ -781,6 +786,7 @@ function nonJsonHttpResponseError(
       code: "unauthorized",
       message: "Agent Mail credential is invalid or revoked",
       status,
+      outcome,
       cause,
     });
   }
@@ -789,6 +795,7 @@ function nonJsonHttpResponseError(
       code: "forbidden",
       message: "Agent Mail credential is not allowed to access this mailbox",
       status,
+      outcome,
       cause,
     });
   }
@@ -797,6 +804,7 @@ function nonJsonHttpResponseError(
       code: "rate_limited",
       message: "Agent Mail temporarily rate limited the request",
       status,
+      outcome,
       cause,
     });
   }
@@ -804,8 +812,19 @@ function nonJsonHttpResponseError(
     code: "http_error",
     message: `Agent Mail returned HTTP ${String(status)}`,
     status,
+    outcome,
     cause,
   });
+}
+
+function httpFailureOutcome(
+  status: number,
+  transportFailureOutcome: "not-sent" | "unknown",
+): "not-sent" | "unknown" {
+  return transportFailureOutcome === "unknown" &&
+    (status === 408 || status >= 500)
+    ? "unknown"
+    : "not-sent";
 }
 
 function outboundIdempotencyKey(intentId: string): string {

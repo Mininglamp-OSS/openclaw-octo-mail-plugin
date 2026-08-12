@@ -443,6 +443,38 @@ describe("AgentMailApiClient", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves an unknown write outcome for a non-JSON gateway failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response("<html>bad gateway</html>", {
+        status: 502,
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+
+    await expect(
+      createClient(fetchMock).sendPreparedDraft("E9", 2),
+    ).rejects.toMatchObject({
+      code: "http_error",
+      status: 502,
+      outcome: "unknown",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a non-JSON definite rejection classified as not sent", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response("forbidden", { status: 403 }),
+    );
+
+    await expect(
+      createClient(fetchMock).sendPreparedDraft("E9", 2),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      status: 403,
+      outcome: "not-sent",
+    });
+  });
+
   it("returns owner-review metadata for a manual reply Draft intent", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       jsonResponse(409, {
