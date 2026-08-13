@@ -3,8 +3,6 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/plugin-entry";
 import { discoverPluginAccounts } from "../accounts/openclaw-account-discovery.js";
 import {
   MAIL_AUTO_REPLY_TOOL_NAME,
-  MAIL_CANCEL_SEND_TOOL_NAME,
-  MAIL_CONFIRM_SEND_TOOL_NAME,
   MAIL_CONNECTION_STATUS_TOOL_NAME,
   MAIL_CONNECT_TOOL_NAME,
   MAIL_GET_MESSAGE_TOOL_NAME,
@@ -20,8 +18,6 @@ export const OCTO_MAIL_TOOL_NAMES = Object.freeze([
   MAIL_REPLY_TOOL_NAME,
   MAIL_SEND_TOOL_NAME,
   MAIL_AUTO_REPLY_TOOL_NAME,
-  MAIL_CONFIRM_SEND_TOOL_NAME,
-  MAIL_CANCEL_SEND_TOOL_NAME,
 ]);
 
 export interface StandardSetupResult {
@@ -44,13 +40,6 @@ export function configureStandardPlugin(
   draft.plugins.entries[PLUGIN_ID] = {
     ...entry,
     enabled: true,
-    hooks: {
-      ...entry.hooks,
-      // Required by standard OpenClaw for the before_agent_run hook. The
-      // plugin reads only an exact trusted-owner confirmation/cancellation
-      // turn and never persists the raw conversation content.
-      allowConversationAccess: true,
-    },
   };
   if (draft.plugins.allow !== undefined) {
     draft.plugins.allow = appendUnique(draft.plugins.allow, PLUGIN_ID);

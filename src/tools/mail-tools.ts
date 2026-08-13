@@ -3,8 +3,6 @@ import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 
 import {
   MAIL_AUTO_REPLY_TOOL_NAME,
-  MAIL_CANCEL_SEND_TOOL_NAME,
-  MAIL_CONFIRM_SEND_TOOL_NAME,
   MAIL_GET_MESSAGE_TOOL_NAME,
   MAIL_REPLY_TOOL_NAME,
   MAIL_SEND_TOOL_NAME,
@@ -16,10 +14,6 @@ import type {
   MailOwnerReviewRequired,
   MailWriteAccepted,
 } from "../mail/mail-client.js";
-import type {
-  MailWorkflowStateStore,
-  PendingMailConfirmation,
-} from "../runtime/mail-workflow-state-store.js";
 
 const getMessageParameters = Type.Object(
   {
@@ -59,10 +53,6 @@ type SendParameters = Static<typeof sendParameters>;
 export interface MailToolOptions {
   client: MailClient;
   simulated: boolean;
-  onOwnerConfirmationDraft?: (
-    draft: MailOwnerConfirmationRequired,
-    input: MailSendInputView,
-  ) => void | Promise<void>;
   onReplyDraft?: (
     draft: MailOwnerConfirmationRequired,
     input: { emailId: string; body: string },
@@ -79,16 +69,6 @@ export interface MailSendInputView {
   bcc: string[];
   subject: string;
   body: string;
-}
-
-export interface MailConfirmationToolOptions {
-  workflowState: MailWorkflowStateStore;
-  agentId: string;
-  sessionKey: string;
-  deliverOwnerDraft: (
-    pending: PendingMailConfirmation,
-    signal?: AbortSignal,
-  ) => Promise<MailWriteAccepted>;
 }
 
 export function createMailGetMessageTool(
@@ -193,7 +173,7 @@ export function createMailSendTool(options: MailToolOptions): AnyAgentTool {
     name: MAIL_SEND_TOOL_NAME,
     label: "Send email",
     description:
-      "Submit one new-email intent from the current Agent's connected sender mailbox. The OCTO server applies hard safety checks, outbound rules, and the mailbox's current outbound mode. In manual-confirmation mode the Tool returns a Draft and you must show sender, recipients, subject and body before asking for exactly ‘确认发送’ or ‘取消发送’. In automatic-send mode an eligible plain-text message may be accepted immediately. Always follow the structured Tool result; never claim a Draft was sent. Draft/message identifiers are internal details unless the owner requests diagnostics. The 'to' field is the recipient and must never be passed to mail_connect.",
+      "Submit one new-email intent from the current Agent's connected sender mailbox. The OCTO server applies hard safety checks, outbound rules, and the mailbox's current outbound mode. In manual-confirmation mode the Tool saves a Draft and the owner must review, edit, and send it from Mail → Drafts; never ask for chat confirmation or claim the Draft was sent. In automatic-send mode an eligible plain-text message may be accepted immediately. Always follow the structured Tool result. Draft/message identifiers are internal details unless the owner requests diagnostics. The 'to' field is the recipient and must never be passed to mail_connect.",
     parameters: sendParameters,
     executionMode: "sequential",
     async execute(toolCallId, rawParams, signal) {
@@ -217,7 +197,6 @@ export function createMailSendTool(options: MailToolOptions): AnyAgentTool {
           subject: params.subject,
           body: params.body,
         };
-        await options.onOwnerConfirmationDraft?.(result, input);
         return preparedSendDraftToolResult(
           result,
           input,
@@ -246,93 +225,6 @@ export function createMailSendTool(options: MailToolOptions): AnyAgentTool {
           subject: params.subject,
           simulated: options.simulated,
           realEmailSent: !options.simulated,
-        },
-      };
-    },
-  };
-}
-
-export function createMailConfirmSendTool(
-  options: MailConfirmationToolOptions,
-): AnyAgentTool {
-  return {
-    name: MAIL_CONFIRM_SEND_TOOL_NAME,
-    label: "Confirm prepared email",
-    description:
-      "Internal OCTO Mail action. Use only after the trusted owner entered the exact confirmation command for the current session.",
-    parameters: Type.Object({}, { additionalProperties: false }),
-    executionMode: "sequential",
-    async execute(_toolCallId, _params, signal) {
-      // The standard OpenClaw before_tool_call hook is the sole authority for
-      // the exact trusted-owner confirmation turn. Tool discovery is a
-      // separate plugin registration, so duplicating an in-memory grant here
-      // would compare state from two different plugin instances.
-      const pending = await requirePendingConfirmation(options);
-      const result = await options.deliverOwnerDraft(pending, signal);
-      await options.workflowState.clearPending(pending);
-      return {
-        content: [
-          {
-            type: "text",
-            text: acceptedConfirmedDraftText(result),
-          },
-        ],
-        details: {
-          outcome: result.outcome,
-          draftId: pending.draftId,
-          draftVersion: pending.draftVersion,
-          messageId: result.messageId,
-          submissionIds: result.submissionIds,
-          senderAddress: result.senderAddress,
-          realEmailSent: true,
-        },
-      };
-    },
-  };
-}
-
-export function createMailCancelSendTool(
-  options: MailConfirmationToolOptions,
-): AnyAgentTool {
-  return {
-    name: MAIL_CANCEL_SEND_TOOL_NAME,
-    label: "Cancel prepared email",
-    description:
-      "Internal OCTO Mail action. Use only after the trusted owner entered the exact cancellation command for the current session.",
-    parameters: Type.Object({}, { additionalProperties: false }),
-    executionMode: "sequential",
-    async execute() {
-      const pending = await requirePendingConfirmation(options);
-      const cleared = await options.workflowState.clearPending(pending);
-      if (cleared === undefined) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "待取消的邮件草稿已发生变化或已被处理，本次没有取消任何待发送草稿。请重新查看当前状态。",
-            },
-          ],
-          details: {
-            outcome: "cancel_not_applied",
-            draftId: pending.draftId,
-            draftVersion: pending.draftVersion,
-            cancellationApplied: false,
-          },
-        };
-      }
-      return {
-        content: [
-          {
-            type: "text",
-            text: "已取消发送。邮件没有发出，内容仍保留在草稿箱中。",
-          },
-        ],
-        details: {
-          outcome: "cancelled",
-          draftId: pending.draftId,
-          draftVersion: pending.draftVersion,
-          realEmailSent: false,
-          draftRetained: true,
         },
       };
     },
@@ -449,7 +341,7 @@ function preparedSendDraftToolResult(
     `主题：${input.subject}`,
     `正文：${input.body}`,
     "",
-    "邮件尚未发送。请回复“确认发送”或“取消发送”。",
+    "邮件尚未发送，已保存到草稿箱。请前往「邮件 → 草稿箱」查看、编辑并发送。",
   );
   return {
     content: [{ type: "text" as const, text: lines.join("\n") }],
@@ -462,7 +354,6 @@ function preparedSendDraftToolResult(
       draftVersion: result.draftVersion,
       threadId: result.threadId,
       realEmailSent: false,
-      confirmationCommands: ["确认发送", "取消发送"],
     },
   };
 }
@@ -493,14 +384,6 @@ function acceptedReplyText(
   return lines.join("\n");
 }
 
-function acceptedConfirmedDraftText(result: MailWriteAccepted): string {
-  const lines = ["邮件已发送。"];
-  if (result.senderAddress !== undefined) {
-    lines.push(`发件邮箱：${result.senderAddress}`);
-  }
-  return lines.join("\n");
-}
-
 function preparedReplyDraftToolResult(
   result: MailOwnerConfirmationRequired,
   emailId: string,
@@ -509,7 +392,7 @@ function preparedReplyDraftToolResult(
     content: [
       {
         type: "text" as const,
-        text: `已生成回复草稿，尚未发送。草稿主题：《${result.draftSubject || "无主题"}》。请前往草稿箱查看、编辑并发送。`,
+        text: `已生成回复草稿，尚未发送。草稿主题：《${result.draftSubject || "无主题"}》。请前往「邮件 → 草稿箱」查看、编辑并发送。`,
       },
     ],
     details: {
@@ -525,16 +408,6 @@ function preparedReplyDraftToolResult(
       realEmailSent: false,
     },
   };
-}
-
-async function requirePendingConfirmation(
-  options: MailConfirmationToolOptions,
-): Promise<PendingMailConfirmation> {
-  const pending = await options.workflowState.getPending(options.sessionKey);
-  if (pending === undefined || pending.agentId !== options.agentId) {
-    throw new Error("There is no pending mail Draft for this Agent session.");
-  }
-  return pending;
 }
 
 function formatAddresses(addresses: MailAddress[]): string {

@@ -8,8 +8,6 @@
       "mail_reply",
       "mail_send",
       "mail_auto_reply",
-      "mail_confirm_send",
-      "mail_cancel_send",
       "mail_connect",
       "mail_connection_status"
     ]
@@ -25,12 +23,6 @@
       "optional": true
     },
     "mail_auto_reply": {
-      "optional": true
-    },
-    "mail_confirm_send": {
-      "optional": true
-    },
-    "mail_cancel_send": {
       "optional": true
     },
     "mail_connect": {

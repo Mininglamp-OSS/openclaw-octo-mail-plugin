@@ -9,17 +9,10 @@ import { PluginAccountRoutingError } from "../accounts/plugin-account.js";
 import {
   MailClientError,
   type MailClient,
-  type MailDraftDeliveryClient,
 } from "../mail/mail-client.js";
 import type { OpenClawOwnerDraftNotifier } from "../openclaw/owner-draft-notifier.js";
-import type {
-  MailWorkflowStateStore,
-  PendingMailConfirmation,
-} from "../runtime/mail-workflow-state-store.js";
 import {
   createMailAutoReplyTool,
-  createMailCancelSendTool,
-  createMailConfirmSendTool,
   createMailGetMessageTool,
   createMailReplyTool,
   createMailSendTool,
@@ -32,15 +25,7 @@ export function createAccountMailToolFactory(options: {
   activateStoredRuntime: (
     pluginAccountId: string,
   ) => PluginAccountRuntime | Promise<PluginAccountRuntime>;
-  workflowState?: MailWorkflowStateStore;
   ownerDraftNotifier?: OpenClawOwnerDraftNotifier;
-  /**
-   * True only in the full registration that also owns the confirmation hooks.
-   * Tool-discovery registrations can execute tools but have no matching
-   * in-memory approval authority, so they must never expose confirmation or
-   * cancellation actions.
-   */
-  confirmationAuthorityAvailable?: boolean;
 }): OpenClawPluginToolFactory {
   return (context) => {
     const agentId = context.agentId?.trim();
@@ -79,28 +64,6 @@ export function createAccountMailToolFactory(options: {
       createMailSendTool({
         client,
         simulated: false,
-        ...(options.confirmationAuthorityAvailable === true &&
-        context.senderIsOwner === true &&
-        context.sessionKey?.includes(":direct:") === true
-          ? { onOwnerConfirmationDraft: async (draft) => {
-          if (options.workflowState === undefined) {
-            throw new Error("mail workflow state is unavailable");
-          }
-          if (context.sessionKey === undefined) {
-            throw new Error("mail confirmation requires a trusted session key");
-          }
-          const runtime = await getRuntime();
-          await options.workflowState.savePending({
-            sessionKey: context.sessionKey,
-            agentId,
-            pluginAccountId: account.pluginAccountId,
-            mailAccountId: runtime.mailAccountId,
-            draftId: draft.draftId,
-            draftVersion: draft.draftVersion,
-            createdAt: new Date().toISOString(),
-          });
-        } }
-          : {}),
       }),
     ];
     if (isHostInboundMailSession(context.sessionKey, agentId)) {
@@ -110,43 +73,6 @@ export function createAccountMailToolFactory(options: {
           simulated: false,
           ...inboundOwnerDraftCallbacks,
         }),
-      );
-    }
-    if (
-      options.confirmationAuthorityAvailable === true &&
-      context.sessionKey !== undefined &&
-      context.sessionKey.includes(":direct:") &&
-      options.workflowState !== undefined
-    ) {
-      const sessionKey = context.sessionKey;
-      const confirmationOptions = {
-        workflowState: options.workflowState,
-        agentId: agentId!,
-        sessionKey,
-        deliverOwnerDraft: async (
-          pending: PendingMailConfirmation,
-          signal?: AbortSignal,
-        ) => {
-          if (pending.pluginAccountId !== account.pluginAccountId) {
-            throw new Error("Pending mail Draft belongs to a different Plugin Account.");
-          }
-          if (pending.mailAccountId === undefined) {
-            throw new Error("Pending mail Draft is missing its Mail Account binding.");
-          }
-          const runtime = await getRuntime();
-          if (pending.mailAccountId !== runtime.mailAccountId) {
-            throw new Error("Pending mail Draft belongs to a different Mail Account.");
-          }
-          return await runtime.client.sendPreparedDraft(
-            pending.draftId,
-            pending.draftVersion,
-            signal,
-          );
-        },
-      };
-      tools.push(
-        createMailConfirmSendTool(confirmationOptions),
-        createMailCancelSendTool(confirmationOptions),
       );
     }
     return tools;
@@ -187,8 +113,8 @@ function createLazyAccountMailClient(options: {
   activateStoredRuntime: (
     pluginAccountId: string,
   ) => PluginAccountRuntime | Promise<PluginAccountRuntime>;
-}): MailClient & MailDraftDeliveryClient {
-  const getClient = async (): Promise<MailClient & MailDraftDeliveryClient> => {
+}): MailClient {
+  const getClient = async (): Promise<MailClient> => {
     await options.ensureRuntimeStarted();
     try {
       return options.runtimes.getById(options.pluginAccountId).client;
@@ -230,13 +156,6 @@ function createLazyAccountMailClient(options: {
     },
     async send(input, signal, intentId) {
       return await (await getClient()).send(input, signal, intentId);
-    },
-    async sendPreparedDraft(draftId, draftVersion, signal) {
-      return await (await getClient()).sendPreparedDraft(
-        draftId,
-        draftVersion,
-        signal,
-      );
     },
   };
 }

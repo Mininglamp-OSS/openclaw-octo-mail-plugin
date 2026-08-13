@@ -74,9 +74,25 @@ export class MailChangesPoller {
       };
     }
     if (state.mailAccountId !== mailAccountId) {
-      throw new FatalDiscoveryError(
-        "mail discovery state belongs to a different JMAP mail account",
+      // Re-authorizing one Plugin Account may intentionally replace its
+      // mailbox credential. The resolved runtime identity is authoritative;
+      // a cursor from the previous Mail Account cannot be used against the new
+      // account, but it also must not stop discovery forever. Start at the new
+      // account's current state so historical mail is never replayed or
+      // auto-replied after a replacement.
+      const currentState =
+        await this.#options.client.getCurrentEmailState(signal);
+      state = createInitialDiscoveryState(mailAccountId, currentState);
+      await this.#options.stateStore.save(state);
+      this.#options.logger.info(
+        `[octo-mail] mail account changed; discovery baseline reset at state=${currentState}`,
       );
+      return {
+        baselineCreated: true,
+        pagesProcessed: 0,
+        emailsDispatched: 0,
+        emailsStoppedAtAutoReplyLimit: 0,
+      };
     }
 
     let pagesProcessed = 0;
