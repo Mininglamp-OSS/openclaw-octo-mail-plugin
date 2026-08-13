@@ -23,7 +23,9 @@ Tools. It does not start `octo-cli` or model email as an IM channel.
 - Node.js `22.22.3+` on Node 22, or a supported Node 24/25 release
 - Standard `openclaw@2026.7.1`
 - `openclaw-channel-octo` configured for the target Bot
-- An OCTO deployment exposing `/agent-mail-api`
+- An OCTO deployment exposing `/agent-mail-api`, including octo-mail's scoped
+  `POST /webapi/v0/drafts/{id}/send` support for
+  `X-Octo-Automation: owner-confirmed-draft`
 
 ClawX may be used as an OpenClaw distribution for local testing, but it is not a
 runtime or packaging dependency.
@@ -110,7 +112,11 @@ production build.
 - Email content, HTML, links, and attachments are untrusted input.
 - JMAP Agent credentials are read-only; writes use controlled WebAPI operations.
 - Write timeouts have an unknown outcome and are not retried automatically.
-- Mailbox credentials and confirmation tokens are never written to normal
-  OpenClaw configuration or logs.
+- The account-scoped `omb_` credential stays inside the Plugin account runtime
+  and is never exposed through Agent-visible tool inputs, outputs, prompts,
+  normal OpenClaw configuration, or logs.
+- Owner-confirmed delivery relies on the trusted direct-session Owner gate; a
+  shared OpenClaw instance containing Bots owned by different people is not
+  supported by this design.
 - Routing fails closed when Agent, Bot, account, or mailbox identity is
   ambiguous.

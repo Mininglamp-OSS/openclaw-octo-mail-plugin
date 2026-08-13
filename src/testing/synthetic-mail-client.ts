@@ -47,12 +47,5 @@ export function createSyntheticMailClient(): MailClient {
       };
     },
 
-    async confirmDraft(): Promise<MailReplyAccepted> {
-      return {
-        outcome: "accepted",
-        messageId: "test-simulated-confirmed-draft",
-        submissionIds: [],
-      };
-    },
   };
 }

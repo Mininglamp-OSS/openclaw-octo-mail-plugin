@@ -370,6 +370,111 @@ describe("AgentMailApiClient", () => {
     );
   });
 
+  it("sends one exact versioned Draft through the owner-confirmed scope", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      jsonResponse(202, {
+        outcome: "accepted",
+        messageId: "E11",
+        submissionIds: [20],
+        senderAddress: "agent@mail.imocto.cn",
+      }),
+    );
+
+    await expect(
+      createClient(fetchMock).sendPreparedDraft("E9", 2),
+    ).resolves.toEqual({
+      outcome: "accepted",
+      messageId: "E11",
+      submissionIds: ["20"],
+      senderAddress: "agent@mail.imocto.cn",
+    });
+
+    const request = fetchMock.mock.calls[0]?.[1];
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      "/agent-mail-api/webapi/v0/drafts/E9/send",
+    );
+    expect(request?.body).toBe('{"draftVersion":2}');
+    expect(new Headers(request?.headers).get("X-Octo-Automation")).toBe(
+      "owner-confirmed-draft",
+    );
+    expect(
+      new Headers(request?.headers).get("X-Octo-Idempotency-Key"),
+    ).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("rejects an invalid prepared Draft version as an invalid argument", async () => {
+    const fetchMock = vi.fn();
+
+    await expect(
+      createClient(fetchMock).sendPreparedDraft("E9", 0),
+    ).rejects.toMatchObject({
+      code: "invalid_argument",
+      outcome: "not-sent",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reports an unknown outcome when prepared Draft delivery loses transport", async () => {
+    const fetchMock = vi.fn().mockRejectedValueOnce(new TypeError("socket closed"));
+
+    await expect(
+      createClient(fetchMock).sendPreparedDraft("E9", 2),
+    ).rejects.toMatchObject({
+      code: "transport_failure",
+      outcome: "unknown",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports an unknown outcome for a prepared Draft delivery server failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      jsonResponse(503, {
+        error: { code: "unavailable", message: "try again later" },
+      }),
+    );
+
+    await expect(
+      createClient(fetchMock).sendPreparedDraft("E9", 2),
+    ).rejects.toMatchObject({
+      code: "unavailable",
+      status: 503,
+      outcome: "unknown",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an unknown write outcome for a non-JSON gateway failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response("<html>bad gateway</html>", {
+        status: 502,
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+
+    await expect(
+      createClient(fetchMock).sendPreparedDraft("E9", 2),
+    ).rejects.toMatchObject({
+      code: "http_error",
+      status: 502,
+      outcome: "unknown",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a non-JSON definite rejection classified as not sent", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response("forbidden", { status: 403 }),
+    );
+
+    await expect(
+      createClient(fetchMock).sendPreparedDraft("E9", 2),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      status: 403,
+      outcome: "not-sent",
+    });
+  });
+
   it("returns owner-review metadata for a manual reply Draft intent", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(
       jsonResponse(409, {
@@ -486,71 +591,6 @@ describe("AgentMailApiClient", () => {
       reason: "max_auto_replies_reached",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("confirms one saved Draft with an exact one-time server challenge", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        jsonResponse(428, {
-          error: { code: "confirmation_required", message: "required" },
-          confirmation: {
-            token: "omc_draft_once",
-            expiresAt: "2026-08-03T10:00:00Z",
-            operation: "mail.draft.send",
-            method: "POST",
-            path: "/webapi/v0/drafts/E8/send",
-          },
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(202, {
-          messageId: "E10",
-          submissionIds: [21],
-          senderAddress: "agent@mail.imocto.cn",
-        }),
-      );
-    await expect(createClient(fetchMock).confirmDraft("E8", 1)).resolves.toEqual({
-      outcome: "accepted",
-      messageId: "E10",
-      submissionIds: ["21"],
-      senderAddress: "agent@mail.imocto.cn",
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe('{"draftVersion":1}');
-    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe('{"draftVersion":1}');
-  });
-
-  it("reports an unknown outcome and never retries a failed confirmed Draft send", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        jsonResponse(428, {
-          error: { code: "confirmation_required", message: "required" },
-          confirmation: {
-            token: "omc_one_time_secret",
-            expiresAt: "2026-08-03T10:00:00Z",
-            operation: "mail.draft.send",
-            method: "POST",
-            path: "/webapi/v0/drafts/E7/send",
-          },
-        }),
-      )
-      .mockRejectedValueOnce(new TypeError("socket closed"));
-    const client = createClient(fetchMock);
-
-    let error: unknown;
-    try {
-      await client.confirmDraft("E7", 1);
-    } catch (caught) {
-      error = caught;
-    }
-    expect(error).toBeInstanceOf(MailClientError);
-    expect(error).toMatchObject({
-      code: "transport_failure",
-      outcome: "unknown",
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("uses the Session EventSource URL and emits Email StateChange notifications", async () => {

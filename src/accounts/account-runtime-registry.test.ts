@@ -243,10 +243,10 @@ function fakeClient(
     send: vi.fn(async () => {
       throw new Error("not used");
     }),
-    replyAutomatically: vi.fn(async () => {
+    sendPreparedDraft: vi.fn(async () => {
       throw new Error("not used");
     }),
-    confirmDraft: vi.fn(async () => {
+    replyAutomatically: vi.fn(async () => {
       throw new Error("not used");
     }),
   };

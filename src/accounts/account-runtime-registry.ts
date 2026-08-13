@@ -12,6 +12,7 @@ import { AgentMailApiClient } from "../mail/agent-mail-api-client.js";
 import type {
   MailClient,
   MailDiscoveryClient,
+  MailDraftDeliveryClient,
   MailIdentityClient,
 } from "../mail/mail-client.js";
 import { MailClientError } from "../mail/mail-client.js";
@@ -20,7 +21,8 @@ import { PluginAccountRoutingError } from "./plugin-account.js";
 
 export type AccountMailClient = MailClient &
   MailDiscoveryClient &
-  MailIdentityClient;
+  MailIdentityClient &
+  MailDraftDeliveryClient;
 
 export interface PluginAccountRuntime {
   config: PluginAccountConfig;

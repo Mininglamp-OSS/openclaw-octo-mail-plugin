@@ -10,6 +10,7 @@ import {
   type MailAutoReplyResult,
   type EmailChangesPage,
   type MailDiscoveryClient,
+  type MailDraftDeliveryClient,
   type MailMessage,
   type MailOwnerConfirmationRequired,
   type MailOwnerReviewRequired,
@@ -27,7 +28,6 @@ const JMAP_CORE = "urn:ietf:params:jmap:core";
 const JMAP_MAIL = "urn:ietf:params:jmap:mail";
 const JMAP_SESSION_PATH = "/agent-mail-api/.well-known/jmap";
 const IDENTITY_PATH = "/agent-mail-api/webapi/v0/identity";
-const CONFIRMATION_HEADER = "X-Octo-Confirmation";
 const AUTOMATION_HEADER = "X-Octo-Automation";
 const IDEMPOTENCY_HEADER = "X-Octo-Idempotency-Key";
 const MAX_JSON_RESPONSE_CHARS = 8 * 1024 * 1024;
@@ -55,7 +55,11 @@ interface JmapSessionInfo {
 }
 
 export class AgentMailApiClient
-  implements MailClient, MailDiscoveryClient, MailIdentityClient
+  implements
+    MailClient,
+    MailDiscoveryClient,
+    MailIdentityClient,
+    MailDraftDeliveryClient
 {
   readonly #origin: string;
   readonly #credential: string;
@@ -448,41 +452,6 @@ export class AgentMailApiClient
     return parseAcceptedWrite(response.body);
   }
 
-  async confirmDraft(
-    draftId: string,
-    draftVersion: number,
-    signal?: AbortSignal,
-    intentId?: string,
-  ): Promise<MailWriteAccepted> {
-    requireNonEmpty(draftId, "draftId");
-    if (!Number.isSafeInteger(draftVersion) || draftVersion <= 0) {
-      throw new MailClientError({
-        code: "invalid_argument",
-        message: "draftVersion must be a positive integer",
-      });
-    }
-    const requestBody = JSON.stringify({ draftVersion });
-    const result = await this.#confirmedWrite(
-      {
-        externalPath: `/agent-mail-api/webapi/v0/drafts/${encodeURIComponent(draftId)}/send`,
-        upstreamPath: `/webapi/v0/drafts/${encodeURIComponent(draftId)}/send`,
-        operation: "mail.draft.send",
-        requestBody,
-        idempotencyKey: outboundIdempotencyKey(
-          intentId ?? `confirm-draft:${draftId}:${String(draftVersion)}`,
-        ),
-      },
-      signal,
-    );
-    if (result.outcome !== "accepted") {
-      throw new MailClientError({
-        code: "unexpected_confirmation_result",
-        message: "confirmed Draft send did not return an accepted result",
-      });
-    }
-    return result;
-  }
-
   async replyAutomatically(
     emailId: string,
     text: string,
@@ -530,78 +499,43 @@ export class AgentMailApiClient
     return parseAcceptedWrite(response.body);
   }
 
-  async #confirmedWrite(
-    input: {
-      externalPath: string;
-      upstreamPath: string;
-      operation: string;
-      requestBody: string;
-      idempotencyKey: string;
-    },
+  async sendPreparedDraft(
+    draftId: string,
+    draftVersion: number,
     signal?: AbortSignal,
-  ): Promise<MailWriteResult> {
-    const challenge = await this.#requestJson(
-      input.externalPath,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [IDEMPOTENCY_HEADER]: input.idempotencyKey,
-        },
-        body: input.requestBody,
-      },
-      signal,
-      "not-sent",
-    );
-
-    if (challenge.status !== 428) {
+  ): Promise<MailWriteAccepted> {
+    requireNonEmpty(draftId, "draftId");
+    if (!Number.isSafeInteger(draftVersion) || draftVersion <= 0) {
       throw new MailClientError({
-        code: challenge.ok
-          ? "confirmation_bypassed"
-          : readServerErrorCode(challenge.body),
-        message: challenge.ok
-          ? "Agent Mail reply executed without the required server confirmation challenge"
-          : readServerErrorMessage(challenge.body),
-        status: challenge.status,
-        outcome: challenge.ok ? "unknown" : "not-sent",
+        code: "invalid_argument",
+        message: "draftVersion must be a positive integer",
       });
     }
-
-    const token = parseConfirmationToken(challenge.body, {
-      operation: input.operation,
-      method: "POST",
-      path: input.upstreamPath,
-    });
-
-    const confirmed = await this.#requestJson(
-      input.externalPath,
+    const response = await this.#requestJson(
+      `/agent-mail-api/webapi/v0/drafts/${encodeURIComponent(draftId)}/send`,
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          [CONFIRMATION_HEADER]: token,
-          [IDEMPOTENCY_HEADER]: input.idempotencyKey,
+          [AUTOMATION_HEADER]: "owner-confirmed-draft",
+          [IDEMPOTENCY_HEADER]: outboundIdempotencyKey(
+            `owner-confirmed-draft:${draftId}:${String(draftVersion)}`,
+          ),
         },
-        // Reuse the exact serialized body that produced the server challenge.
-        body: input.requestBody,
+        body: JSON.stringify({ draftVersion }),
       },
       signal,
       "unknown",
     );
-
-    if (isOwnerReviewRequired(confirmed)) {
-      return parseOwnerReviewRequired(confirmed.body);
-    }
-    if (confirmed.status !== 202) {
+    if (response.status !== 202) {
       throw new MailClientError({
-        code: readServerErrorCode(confirmed.body),
-        message: readServerErrorMessage(confirmed.body),
-        status: confirmed.status,
-        outcome: confirmed.status >= 500 ? "unknown" : "not-sent",
+        code: readServerErrorCode(response.body),
+        message: readServerErrorMessage(response.body),
+        status: response.status,
+        outcome: response.status >= 500 ? "unknown" : "not-sent",
       });
     }
-
-    return parseAcceptedWrite(confirmed.body);
+    return parseAcceptedWrite(response.body);
   }
 
   async #jmapSession(signal?: AbortSignal): Promise<JmapSessionInfo> {
@@ -795,7 +729,11 @@ export class AgentMailApiClient
         body = JSON.parse(raw);
       } catch (cause) {
         if (!response.ok) {
-          throw nonJsonHttpResponseError(response.status, cause);
+          throw nonJsonHttpResponseError(
+            response.status,
+            httpFailureOutcome(response.status, transportFailureOutcome),
+            cause,
+          );
         }
         throw new MailClientError({
           code: "invalid_json_response",
@@ -840,6 +778,7 @@ export class AgentMailApiClient
 
 function nonJsonHttpResponseError(
   status: number,
+  outcome: "not-sent" | "unknown",
   cause: unknown,
 ): MailClientError {
   if (status === 401) {
@@ -847,6 +786,7 @@ function nonJsonHttpResponseError(
       code: "unauthorized",
       message: "Agent Mail credential is invalid or revoked",
       status,
+      outcome,
       cause,
     });
   }
@@ -855,6 +795,7 @@ function nonJsonHttpResponseError(
       code: "forbidden",
       message: "Agent Mail credential is not allowed to access this mailbox",
       status,
+      outcome,
       cause,
     });
   }
@@ -863,6 +804,7 @@ function nonJsonHttpResponseError(
       code: "rate_limited",
       message: "Agent Mail temporarily rate limited the request",
       status,
+      outcome,
       cause,
     });
   }
@@ -870,35 +812,19 @@ function nonJsonHttpResponseError(
     code: "http_error",
     message: `Agent Mail returned HTTP ${String(status)}`,
     status,
+    outcome,
     cause,
   });
 }
 
-function parseConfirmationToken(
-  body: Record<string, unknown>,
-  expected: { operation: string; method: string; path: string },
-): string {
-  if (readServerErrorCode(body) !== "confirmation_required") {
-    throw new MailClientError({
-      code: readServerErrorCode(body),
-      message: "Agent Mail did not return the required confirmation challenge",
-      status: 428,
-    });
-  }
-  const confirmation = readRecord(body, "confirmation");
-  const token = readRequiredString(confirmation, "token");
-  if (
-    confirmation["operation"] !== expected.operation ||
-    confirmation["method"] !== expected.method ||
-    confirmation["path"] !== expected.path
-  ) {
-    throw new MailClientError({
-      code: "confirmation_mismatch",
-      message: "Agent Mail confirmation challenge does not match the reply request",
-      status: 428,
-    });
-  }
-  return token;
+function httpFailureOutcome(
+  status: number,
+  transportFailureOutcome: "not-sent" | "unknown",
+): "not-sent" | "unknown" {
+  return transportFailureOutcome === "unknown" &&
+    (status === 408 || status >= 500)
+    ? "unknown"
+    : "not-sent";
 }
 
 function outboundIdempotencyKey(intentId: string): string {
