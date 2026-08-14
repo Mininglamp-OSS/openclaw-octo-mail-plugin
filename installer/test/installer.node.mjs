@@ -105,7 +105,7 @@ test("skips installation when the plugin is already present", () => {
   ]);
 });
 
-test("uses the public npm plugin source when a clean host has no plugin", () => {
+test("uses the public ClawHub plugin source when a clean host has no plugin", () => {
   const calls = [];
   const statuses = [1, 0, 0, 0];
   runInstallerCli(
@@ -129,7 +129,7 @@ test("uses the public npm plugin source when a clean host has no plugin", () => 
   assert.deepEqual(calls[1], [
     "plugins",
     "install",
-    "npm:openclaw-octo-mail-plugin",
+    "clawhub:openclaw-octo-mail-plugin",
   ]);
 });
 

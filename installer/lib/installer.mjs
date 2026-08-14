@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 
 const PLUGIN_ID = "octo-mail";
-const DEFAULT_PLUGIN_SOURCE = "npm:openclaw-octo-mail-plugin";
+const DEFAULT_PLUGIN_SOURCE = "clawhub:openclaw-octo-mail-plugin";
 
 export function runInstallerCli(
   argv,
