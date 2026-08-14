@@ -9,8 +9,6 @@ import { parsePluginConfig, pluginConfigSchema } from "./config/plugin-config.js
 import {
   MAIL_AUTHORIZATION_SERVICE_ID,
   MAIL_AUTO_REPLY_TOOL_NAME,
-  MAIL_CANCEL_SEND_TOOL_NAME,
-  MAIL_CONFIRM_SEND_TOOL_NAME,
   MAIL_CONNECTION_STATUS_TOOL_NAME,
   MAIL_CONNECT_TOOL_NAME,
   MAIL_GET_MESSAGE_TOOL_NAME,
@@ -23,7 +21,6 @@ import { PluginAccountRuntimeRegistry } from "./accounts/account-runtime-registr
 import { resolveRuntimePluginAccounts } from "./accounts/plugin-account-source.js";
 import { AgentMailAuthorizationService } from "./auth/agent-mail-authorization-service.js";
 import { createOpenClawInboundMailDispatcher } from "./openclaw/agent-dispatcher.js";
-import { registerMailWriteApproval } from "./openclaw/mail-write-approval.js";
 import { OpenClawOwnerDraftNotifier } from "./openclaw/owner-draft-notifier.js";
 import { registerOctoMailCli } from "./openclaw/standard-cli.js";
 import { buildMailToolGuidance } from "./openclaw/mail-tool-guidance.js";
@@ -58,12 +55,6 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
     registerOctoMailCli(api);
     const config = parsePluginConfig(api.pluginConfig);
     const fullRegistration = api.registrationMode === "full";
-    // Lifecycle hooks belong only to the long-lived full registration. Tool
-    // discovery runs in a separate plugin registration and must not create a
-    // second in-memory approval authority.
-    if (fullRegistration) {
-      registerMailWriteApproval(api);
-    }
     const workflowState = new FileMailWorkflowStateStore(
       join(
         resolveStateDir(),
@@ -159,9 +150,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
               },
             );
           },
-          workflowState,
           ownerDraftNotifier,
-          confirmationAuthorityAvailable: fullRegistration,
         }),
         {
           names: [
@@ -169,9 +158,6 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
             MAIL_REPLY_TOOL_NAME,
             MAIL_SEND_TOOL_NAME,
             MAIL_AUTO_REPLY_TOOL_NAME,
-            ...(fullRegistration
-              ? [MAIL_CONFIRM_SEND_TOOL_NAME, MAIL_CANCEL_SEND_TOOL_NAME]
-              : []),
           ],
           optional: true,
         },

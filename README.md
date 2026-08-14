@@ -14,7 +14,7 @@ Tools. It does not start `octo-cli` or model email as an IM channel.
 - Incremental Inbox discovery and local cursor persistence
 - Read, send, reply, and automatic-reply Mail Tools
 - Manual-confirmation and server-authorized automatic-send modes
-- Draft notification and exact-confirmation workflow
+- Draft notification and Web Drafts handoff
 - Untrusted-email prompt boundary
 - Automatic-reply chain limits
 
@@ -23,9 +23,7 @@ Tools. It does not start `octo-cli` or model email as an IM channel.
 - Node.js `22.22.3+` on Node 22, or a supported Node 24/25 release
 - Standard `openclaw@2026.7.1`
 - `openclaw-channel-octo` configured for the target Bot
-- An OCTO deployment exposing `/agent-mail-api`, including octo-mail's scoped
-  `POST /webapi/v0/drafts/{id}/send` support for
-  `X-Octo-Automation: owner-confirmed-draft`
+- An OCTO deployment exposing `/agent-mail-api`
 
 ClawX may be used as an OpenClaw distribution for local testing, but it is not a
 runtime or packaging dependency.
@@ -88,8 +86,6 @@ bindings. An ambiguous or missing mapping fails closed for the affected Agent.
 - `mail_send`
 - `mail_reply`
 - `mail_auto_reply`
-- `mail_confirm_send`
-- `mail_cancel_send`
 
 Write authorization is enforced by octo-mail. Prompt text and plugin
 configuration cannot grant automatic-send permission.

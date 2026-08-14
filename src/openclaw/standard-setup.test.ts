@@ -15,12 +15,12 @@ describe("configureStandardPlugin", () => {
 
     expect(result).toEqual({ discoveredAccounts: 1, mappingIssues: 0 });
     expect(config.plugins?.entries?.["octo-mail"]?.enabled).toBe(true);
-    expect(config.plugins?.entries?.["octo-mail"]?.hooks).toEqual({
-      allowConversationAccess: true,
-    });
+    expect(config.plugins?.entries?.["octo-mail"]?.hooks).toBeUndefined();
     expect(config.tools?.alsoAllow).toEqual(
       expect.arrayContaining([...OCTO_MAIL_TOOL_NAMES]),
     );
+    expect(OCTO_MAIL_TOOL_NAMES).not.toContain("mail_confirm_send");
+    expect(OCTO_MAIL_TOOL_NAMES).not.toContain("mail_cancel_send");
     expect(config.approvals?.plugin).toBeUndefined();
     expect(config.agents?.list?.[0]?.tools).toBeUndefined();
     expect(
@@ -46,7 +46,7 @@ describe("configureStandardPlugin", () => {
     expect(config.plugins.allow).toEqual(["octo", "octo-mail"]);
   });
 
-  it("preserves other plugin hook settings while enabling trusted turn inspection", () => {
+  it("preserves operator-defined plugin hook settings", () => {
     const config = createConfig();
     config.plugins = {
       entries: {
@@ -63,7 +63,6 @@ describe("configureStandardPlugin", () => {
 
     expect(config.plugins.entries?.["octo-mail"]?.hooks).toEqual({
       allowPromptInjection: false,
-      allowConversationAccess: true,
     });
   });
 

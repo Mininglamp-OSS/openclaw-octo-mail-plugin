@@ -52,6 +52,73 @@ describe("POC mail tools", () => {
     expect(result.details).toMatchObject({ realEmailSent: false });
   });
 
+  it("hands a manual-mode new-message Draft off to the Web Drafts mailbox", async () => {
+    const client = createSyntheticMailClient();
+    client.send = async () => ({
+      outcome: "owner_confirmation_required",
+      status: "pending_confirmation",
+      draftType: "agent_pending_confirmation",
+      draftId: "E55",
+      draftSubject: "Hello",
+      draftVersion: 1,
+      senderAddress: "alice@mail.imocto.cn",
+    });
+    const tool = createMailSendTool({
+      client,
+      simulated: false,
+    }) as ExecutableTool;
+
+    const result = await tool.execute("call-manual-draft", {
+      to: ["bob@mail.imocto.cn"],
+      subject: "Hello",
+      body: "World",
+    });
+
+    expect(result.content[0]?.text).toContain(
+      "请前往「邮件 → 草稿箱」查看、编辑并发送。",
+    );
+    expect(result.content[0]?.text).not.toContain("确认发送");
+    expect(result.details).toMatchObject({
+      outcome: "owner_confirmation_required",
+      draftId: "E55",
+      realEmailSent: false,
+    });
+    expect(result.details).not.toHaveProperty("confirmationCommands");
+  });
+
+  it("hands a manual-mode reply Draft off to the Web Drafts mailbox", async () => {
+    const client = createSyntheticMailClient();
+    client.reply = async () => ({
+      outcome: "owner_confirmation_required",
+      status: "pending_confirmation",
+      draftType: "agent_pending_confirmation",
+      draftId: "E56",
+      draftSubject: "Re: Hello",
+      draftVersion: 1,
+      sourceEmailId: "E55",
+    });
+    const tool = createMailReplyTool({
+      client,
+      simulated: false,
+    }) as ExecutableTool;
+
+    const result = await tool.execute("call-manual-reply-draft", {
+      emailId: "E55",
+      body: "Reply body",
+    });
+
+    expect(result.content[0]?.text).toContain(
+      "请前往「邮件 → 草稿箱」查看、编辑并发送。",
+    );
+    expect(result.content[0]?.text).not.toContain("确认发送");
+    expect(result.details).toMatchObject({
+      outcome: "owner_confirmation_required",
+      draftId: "E56",
+      sourceEmailId: "E55",
+      realEmailSent: false,
+    });
+  });
+
   it("reports a chain-limit stop as not sent without requesting approval", async () => {
     const client = createSyntheticMailClient();
     client.replyAutomatically = async () => ({

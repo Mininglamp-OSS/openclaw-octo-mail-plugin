@@ -28,9 +28,10 @@ describe("buildMailToolGuidance", () => {
     expect(guidance).toContain("owner_review_required");
     expect(guidance).toContain("senderAddress");
     expect(guidance).toContain("never infer or copy a sender address");
-    expect(guidance).toContain("确认发送");
-    expect(guidance).toContain("mail_confirm_send");
-    expect(guidance).toContain("mail_cancel_send");
+    expect(guidance).toContain("邮件 → 草稿箱");
+    expect(guidance).not.toContain("确认发送");
+    expect(guidance).not.toContain("mail_confirm_send");
+    expect(guidance).not.toContain("mail_cancel_send");
     expect(guidance).toContain("unsent reply Draft");
     expect(guidance).toContain("replaceExisting=true");
     expect(guidance).toContain("mail_connect.spaceId");
