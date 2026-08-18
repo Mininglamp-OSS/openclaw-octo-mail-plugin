@@ -105,6 +105,49 @@ export class AgentMailApiClient
         message: `Email ${emailId} was not found`,
       });
     }
+    let detail: JsonResponse;
+    try {
+      detail = await this.#requestJson(
+        `/agent-mail-api/webapi/v0/messages/${encodeURIComponent(emailId)}`,
+        { method: "GET" },
+        signal,
+        "not-sent",
+      );
+    } catch (error) {
+      if (!isUnavailableForwardingDetail(error, signal)) throw error;
+      return message;
+    }
+    if (!detail.ok) {
+      return message;
+    }
+    const detailId = readOptionalString(detail.body["id"]);
+    if (detailId === "") {
+      return message;
+    }
+    if (detailId !== emailId) {
+      throw invalidJsonResponse(
+        "Agent Mail returned forwarding attribution for a different message",
+      );
+    }
+    const originalFrom = readOptionalString(detail.body["originalFrom"]);
+    const sentBy = readOptionalString(detail.body["sentBy"]);
+    if ((originalFrom === "") !== (sentBy === "")) {
+      throw invalidJsonResponse(
+        "Agent Mail returned incomplete forwarding attribution",
+      );
+    }
+    if (originalFrom !== "") {
+      message.originalFrom = requireMailboxList(
+        [originalFrom],
+        "forwarding originalFrom",
+        true,
+      )[0]!;
+      message.sentBy = requireMailboxList(
+        [sentBy],
+        "forwarding sentBy",
+        true,
+      )[0]!;
+    }
     return message;
   }
 
@@ -1038,6 +1081,22 @@ function readRequiredJsonBoolean(
 
 function invalidJsonResponse(message: string): MailClientError {
   return new MailClientError({ code: "invalid_json_response", message });
+}
+
+function isUnavailableForwardingDetail(
+  error: unknown,
+  signal: AbortSignal | undefined,
+): boolean {
+  if (signal?.aborted === true || !(error instanceof MailClientError)) {
+    return false;
+  }
+  return (
+    error.code === "transport_failure" ||
+    error.code === "invalid_json_response" ||
+    error.code === "response_too_large" ||
+    (error.status !== undefined &&
+      (error.status < 200 || error.status >= 300))
+  );
 }
 
 function firstBodyValue(
