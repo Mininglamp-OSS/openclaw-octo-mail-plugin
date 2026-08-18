@@ -16,6 +16,10 @@ export interface MailMessage {
   textBody?: string;
   htmlBody?: string;
   hasAttachment: boolean;
+  /** Server-verified source of a forwarding-rule message. */
+  originalFrom?: string;
+  /** Server-verified mailbox that directly forwarded this message. */
+  sentBy?: string;
 }
 
 export interface MailWriteAccepted {

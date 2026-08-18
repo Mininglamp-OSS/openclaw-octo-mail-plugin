@@ -97,6 +97,13 @@ describe("AgentMailApiClient", () => {
             ],
           ],
         }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          id: "E7",
+          originalFrom: "bob@example.test",
+          sentBy: "alice@example.test",
+        }),
       );
     const client = createClient(fetchMock);
 
@@ -107,14 +114,19 @@ describe("AgentMailApiClient", () => {
       subject: "Hello",
       textBody: "Plain body",
       htmlBody: "<p>HTML body</p>",
+      originalFrom: "bob@example.test",
+      sentBy: "alice@example.test",
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
       `${TEST_OCTO_ORIGIN}/agent-mail-api/.well-known/jmap`,
     );
     expect(String(fetchMock.mock.calls[1]?.[0])).toBe(
       `${TEST_OCTO_ORIGIN}/agent-mail-api/jmap/api`,
+    );
+    expect(String(fetchMock.mock.calls[2]?.[0])).toBe(
+      `${TEST_OCTO_ORIGIN}/agent-mail-api/webapi/v0/messages/E7`,
     );
     for (const call of fetchMock.mock.calls) {
       const headers = new Headers(call[1]?.headers);
@@ -127,6 +139,175 @@ describe("AgentMailApiClient", () => {
     expect(request.methodCalls[0]?.[1]).toEqual({
       accountId: "42",
       ids: ["E7"],
+    });
+  });
+
+  it("keeps a normal JMAP message readable when forwarding detail is unavailable", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jmapSession())
+      .mockResolvedValueOnce(jmapMessageResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(503, {
+          error: { code: "unavailable", message: "try again later" },
+        }),
+      );
+
+    await expect(createClient(fetchMock).getMessage("E7")).resolves.toMatchObject({
+      emailId: "E7",
+      subject: "Hello",
+    });
+  });
+
+  it("keeps a normal JMAP message readable when forwarding detail loses transport", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jmapSession())
+      .mockResolvedValueOnce(jmapMessageResponse())
+      .mockRejectedValueOnce(new TypeError("socket closed"));
+
+    await expect(createClient(fetchMock).getMessage("E7")).resolves.toMatchObject({
+      emailId: "E7",
+      subject: "Hello",
+    });
+  });
+
+  it.each([
+    [
+      "invalid JSON",
+      () =>
+        new Response("<html>not json</html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html" },
+        }),
+    ],
+    ["non-object JSON", () => jsonResponse(200, ["not", "an", "object"])],
+    [
+      "an oversized response",
+      () =>
+        new Response("x".repeat(8 * 1024 * 1024 + 1), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    ],
+  ])("keeps a normal JMAP message readable after %s", async (_name, detail) => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jmapSession())
+      .mockResolvedValueOnce(jmapMessageResponse())
+      .mockResolvedValueOnce(detail());
+
+    await expect(createClient(fetchMock).getMessage("E7")).resolves.toMatchObject({
+      emailId: "E7",
+      subject: "Hello",
+    });
+  });
+
+  it("propagates caller cancellation during forwarding detail lookup", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jmapSession())
+      .mockResolvedValueOnce(jmapMessageResponse())
+      .mockImplementationOnce(
+        (_target: string | URL | Request, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => reject(new Error("request aborted")),
+              { once: true },
+            );
+          }),
+      );
+
+    const pending = createClient(fetchMock).getMessage("E7", controller.signal);
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: "transport_failure",
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    controller.abort();
+
+    await rejection;
+  });
+
+  it("returns no forwarding attribution for a normal message detail", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jmapSession())
+      .mockResolvedValueOnce(jmapMessageResponse())
+      .mockResolvedValueOnce(jsonResponse(200, { id: "E7" }));
+
+    const message = await createClient(fetchMock).getMessage("E7");
+
+    expect(message).not.toHaveProperty("originalFrom");
+    expect(message).not.toHaveProperty("sentBy");
+  });
+
+  it("returns no forwarding attribution when message detail has no id", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jmapSession())
+      .mockResolvedValueOnce(jmapMessageResponse())
+      .mockResolvedValueOnce(jsonResponse(200, {}));
+
+    const message = await createClient(fetchMock).getMessage("E7");
+
+    expect(message).not.toHaveProperty("originalFrom");
+    expect(message).not.toHaveProperty("sentBy");
+  });
+
+  it("rejects forwarding attribution for a different message", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jmapSession())
+      .mockResolvedValueOnce(jmapMessageResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          id: "E8",
+          originalFrom: "bob@example.test",
+          sentBy: "alice@example.test",
+        }),
+      );
+
+    await expect(createClient(fetchMock).getMessage("E7")).rejects.toMatchObject({
+      code: "invalid_json_response",
+      message: "Agent Mail returned forwarding attribution for a different message",
+    });
+  });
+
+  it("fails closed for incomplete or malformed forwarding attribution", async () => {
+    const incompleteFetch = vi
+      .fn()
+      .mockResolvedValueOnce(jmapSession())
+      .mockResolvedValueOnce(jmapMessageResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          id: "E7",
+          originalFrom: "bob@example.test",
+        }),
+      );
+    await expect(
+      createClient(incompleteFetch).getMessage("E7"),
+    ).rejects.toMatchObject({
+      code: "invalid_json_response",
+      message: "Agent Mail returned incomplete forwarding attribution",
+    });
+
+    const malformedFetch = vi
+      .fn()
+      .mockResolvedValueOnce(jmapSession())
+      .mockResolvedValueOnce(jmapMessageResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          id: "E7",
+          originalFrom: "not a mailbox",
+          sentBy: "alice@example.test",
+        }),
+      );
+    await expect(
+      createClient(malformedFetch).getMessage("E7"),
+    ).rejects.toMatchObject({
+      code: "invalid_argument",
     });
   });
 
@@ -697,6 +878,26 @@ function jsonResponse(status: number, body: unknown): Response {
 function jmapResponse(method: string, body: unknown): Response {
   return jsonResponse(200, {
     methodResponses: [[method, body, "octo-mail-plugin"]],
+  });
+}
+
+function jmapMessageResponse(emailId = "E7"): Response {
+  return jmapResponse("Email/get", {
+    accountId: "42",
+    state: "9",
+    list: [
+      {
+        id: emailId,
+        mailboxIds: { inbox: true },
+        from: [{ name: "Alice", email: "alice@example.test" }],
+        to: [{ email: "agent@example.test" }],
+        cc: [],
+        subject: "Hello",
+        preview: "Plain body",
+        hasAttachment: false,
+      },
+    ],
+    notFound: [],
   });
 }
 
