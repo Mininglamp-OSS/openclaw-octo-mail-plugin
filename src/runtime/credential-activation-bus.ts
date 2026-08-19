@@ -1,19 +1,21 @@
+import type { PluginAccountConfig } from "../accounts/plugin-account.js";
+
 type CredentialActivationListener = (
-  pluginAccountId: string,
+  account: PluginAccountConfig,
 ) => void | Promise<void>;
 
 const listeners = new Set<CredentialActivationListener>();
 
 /**
  * Notify the one full Gateway runtime after a tool-discovery context stores a
- * new credential. Only the non-secret Plugin Account id crosses this process-
- * local boundary; the full runtime re-reads the credential from private
- * storage.
+ * new credential. Only validated, non-secret Plugin Account configuration
+ * crosses this process-local boundary; the full runtime re-reads the credential
+ * from private storage.
  */
 export async function notifyCredentialActivation(
-  pluginAccountId: string,
+  account: PluginAccountConfig,
 ): Promise<void> {
-  await Promise.all([...listeners].map((listener) => listener(pluginAccountId)));
+  await Promise.all([...listeners].map((listener) => listener(account)));
 }
 
 export function subscribeCredentialActivation(

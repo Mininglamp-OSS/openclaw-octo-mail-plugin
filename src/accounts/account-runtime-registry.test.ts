@@ -123,6 +123,8 @@ describe("Plugin Account runtime registry", () => {
       ],
     }).accounts;
     const onAccountLoadError = vi.fn();
+    const revokedGetMailAccountId = vi.fn(async () => "mail-revoked");
+    const revokedGetInboxMailboxId = vi.fn(async () => "inbox-revoked");
     const registry = new PluginAccountRuntimeRegistry(
       new PluginAccountCatalog(accounts),
       {
@@ -133,8 +135,11 @@ describe("Plugin Account runtime registry", () => {
         ),
         createClient: (account) => {
           if (account.pluginAccountId === "revoked") {
+            const client = fakeClient("mail-revoked", "inbox-revoked");
             return {
-              ...fakeClient("mail-revoked", "inbox-revoked"),
+              ...client,
+              getMailAccountId: revokedGetMailAccountId,
+              getInboxMailboxId: revokedGetInboxMailboxId,
               getIdentityAddress: vi.fn(async () => {
                 throw new MailClientError({
                   code: "unauthorized",
@@ -160,6 +165,126 @@ describe("Plugin Account runtime registry", () => {
       expect.objectContaining({ pluginAccountId: "revoked" }),
       expect.objectContaining({ code: "unauthorized" }),
     );
+    expect(revokedGetMailAccountId).not.toHaveBeenCalled();
+    expect(revokedGetInboxMailboxId).not.toHaveBeenCalled();
+  });
+
+  it("loads accounts and each account's authentication requests serially", async () => {
+    const accounts = parseReliablePluginConfig({
+      accounts: [
+        accountInput("first", "agent-a", "first_file"),
+        accountInput("second", "agent-b", "second_file"),
+      ],
+    }).accounts;
+    const calls: string[] = [];
+    const registry = new PluginAccountRuntimeRegistry(
+      new PluginAccountCatalog(accounts),
+      {
+        validateCredentialTarget: vi.fn(),
+        credentialExists: vi.fn(async () => true),
+        resolveCredential: vi.fn(async (account) =>
+          testCredential(account.pluginAccountId),
+        ),
+        createClient: (account) => ({
+          ...fakeClient(`mail-${account.pluginAccountId}`, "inbox"),
+          getIdentityAddress: vi.fn(async () => {
+            calls.push(`${account.pluginAccountId}:identity`);
+            return `${account.pluginAccountId}@example.test`;
+          }),
+          getMailAccountId: vi.fn(async () => {
+            calls.push(`${account.pluginAccountId}:account`);
+            return `mail-${account.pluginAccountId}`;
+          }),
+          getInboxMailboxId: vi.fn(async () => {
+            calls.push(`${account.pluginAccountId}:inbox`);
+            return "inbox";
+          }),
+        }),
+      },
+    );
+
+    await registry.start({ config: {} as OpenClawConfig, stateDir: "/tmp/test" });
+
+    expect(calls).toEqual([
+      "first:identity",
+      "first:account",
+      "first:inbox",
+      "second:identity",
+      "second:account",
+      "second:inbox",
+    ]);
+  });
+
+  it("waits for the authentication window and retries one rate-limited account once", async () => {
+    const [account] = parseReliablePluginConfig({
+      accounts: [accountInput("support", "mail-agent", "support_file")],
+    }).accounts;
+    const sleep = vi.fn(async () => undefined);
+    const getIdentityAddress = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(
+        new MailClientError({
+          code: "rate_limited",
+          message: "slow down",
+          status: 429,
+        }),
+      )
+      .mockResolvedValueOnce("support@example.test");
+    const registry = new PluginAccountRuntimeRegistry(
+      new PluginAccountCatalog([account!]),
+      {
+        validateCredentialTarget: vi.fn(),
+        credentialExists: vi.fn(async () => true),
+        resolveCredential: vi.fn(async () => testCredential("support")),
+        createClient: () => ({
+          ...fakeClient("mail-support", "inbox"),
+          getIdentityAddress,
+        }),
+        sleep,
+      },
+    );
+
+    await registry.start({ config: {} as OpenClawConfig, stateDir: "/tmp/test" });
+
+    expect(sleep).toHaveBeenCalledWith(60_000, undefined);
+    expect(getIdentityAddress).toHaveBeenCalledTimes(2);
+    expect(registry.getById("support")).toMatchObject({
+      mailboxAddress: "support@example.test",
+    });
+  });
+
+  it("fails after one bounded retry when rate limiting persists", async () => {
+    const [account] = parseReliablePluginConfig({
+      accounts: [accountInput("support", "mail-agent", "support_file")],
+    }).accounts;
+    const rateLimited = new MailClientError({
+      code: "rate_limited",
+      message: "slow down",
+      status: 429,
+    });
+    const getIdentityAddress = vi.fn(async () => {
+      throw rateLimited;
+    });
+    const sleep = vi.fn(async () => undefined);
+    const registry = new PluginAccountRuntimeRegistry(
+      new PluginAccountCatalog([account!]),
+      {
+        validateCredentialTarget: vi.fn(),
+        credentialExists: vi.fn(async () => true),
+        resolveCredential: vi.fn(async () => testCredential("support")),
+        createClient: () => ({
+          ...fakeClient("mail-support", "inbox"),
+          getIdentityAddress,
+        }),
+        sleep,
+      },
+    );
+
+    await expect(
+      registry.start({ config: {} as OpenClawConfig, stateDir: "/tmp/test" }),
+    ).rejects.toBe(rateLimited);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(getIdentityAddress).toHaveBeenCalledTimes(2);
   });
 
   it("clears active client references on stop", async () => {

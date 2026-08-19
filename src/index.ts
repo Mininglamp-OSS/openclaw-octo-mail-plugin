@@ -103,7 +103,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
             if (discoveryManager !== undefined) {
               await discoveryManager.activate(runtime);
             } else {
-              await notifyCredentialActivation(account.pluginAccountId);
+              await notifyCredentialActivation(account);
             }
           },
           onBackgroundError: (account, error) => {
@@ -142,13 +142,15 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
           },
           activateStoredRuntime: async (pluginAccountId) => {
             await runtimeController.ensureStarted();
-            return await accountRuntimes.activateStored(
+            const runtime = await accountRuntimes.activateStored(
               accountCatalog.getById(pluginAccountId),
               {
                 config: api.config,
                 stateDir: resolveStateDir(),
               },
             );
+            await discoveryManager?.activate(runtime);
+            return runtime;
           },
           ownerDraftNotifier,
         }),
@@ -189,7 +191,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
       const guidance = buildMailToolGuidance({
         messageProvider: context.messageProvider,
         agentId: context.agentId,
-        accounts: accountSource.accounts,
+        accounts: accountCatalog.listAll(),
       });
       return guidance === null
         ? undefined
@@ -202,16 +204,17 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
         id: MAIL_AUTHORIZATION_SERVICE_ID,
         async start(ctx) {
           unsubscribeCredentialActivation = subscribeCredentialActivation(
-            async (pluginAccountId) => {
+            async (account) => {
               try {
+                const registeredAccount = accountCatalog.register(account);
                 const runtime = await accountRuntimes.activateStored(
-                  accountCatalog.getById(pluginAccountId),
+                  registeredAccount,
                   { config: ctx.config, stateDir: ctx.stateDir },
                 );
                 await discoveryManager.activate(runtime);
               } catch (error) {
                 api.logger.error(
-                  `[octo-mail] failed to activate newly stored credential for Plugin Account ${pluginAccountId}: ${error instanceof Error ? error.message : String(error)}`,
+                  `[octo-mail] failed to activate newly stored credential for Plugin Account ${account.pluginAccountId}: ${error instanceof Error ? error.message : String(error)}`,
                 );
               }
             },

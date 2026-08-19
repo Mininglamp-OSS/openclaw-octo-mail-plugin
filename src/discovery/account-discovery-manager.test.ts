@@ -200,6 +200,45 @@ describe("AccountDiscoveryManager", () => {
     expect(client.getEmailChanges).toHaveBeenCalledTimes(1);
     await manager.stop();
   });
+
+  it("serializes concurrent activation for the same Plugin Account", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "octo-mail-activation-"));
+    temporaryDirectories.push(stateDir);
+    const signals: AbortSignal[] = [];
+    const blockingClient = () =>
+      ({
+        getMailAccountId: vi.fn(
+          async (signal?: AbortSignal) =>
+            await new Promise<string>((_resolve, reject) => {
+              if (signal === undefined) {
+                reject(new Error("missing discovery signal"));
+                return;
+              }
+              signals.push(signal);
+              signal.addEventListener(
+                "abort",
+                () => reject(signal.reason),
+                { once: true },
+              );
+            }),
+        ),
+      }) as unknown as AccountMailClient;
+    const manager = new AccountDiscoveryManager({
+      logger: logger(),
+      createDispatcher: () => ({ dispatch: vi.fn() }),
+    });
+
+    await manager.start(stateDir, []);
+    await Promise.all([
+      manager.activate(runtime(blockingClient())),
+      manager.activate(runtime(blockingClient())),
+    ]);
+    expect(signals).toHaveLength(2);
+
+    await manager.stop();
+
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+  });
 });
 
 function runtime(client: AccountMailClient): PluginAccountRuntime {

@@ -59,7 +59,10 @@ export interface AccountRuntimeRegistryDependencies {
     account: PluginAccountConfig,
     error: unknown,
   ) => void;
+  sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 }
+
+const RATE_LIMIT_RETRY_DELAY_MS = 60_000;
 
 /** Owns verified, in-memory clients without exposing credential values. */
 export class PluginAccountRuntimeRegistry {
@@ -83,6 +86,7 @@ export class PluginAccountRuntimeRegistry {
         dependencies.credentialExists ?? defaultCredentialExists,
       onAccountLoadError:
         dependencies.onAccountLoadError ?? (() => undefined),
+      sleep: dependencies.sleep ?? sleepWithSignal,
     };
   }
 
@@ -95,30 +99,32 @@ export class PluginAccountRuntimeRegistry {
       const enabledAccounts = this.#catalog
         .listAll()
         .filter((account) => account.enabled);
-      const candidates = await Promise.all(
-        enabledAccounts.map(async (account) => {
-          this.#dependencies.validateCredentialTarget(account, context);
-          if (!(await this.#dependencies.credentialExists(account, context))) {
-            return undefined;
-          }
-          const credential = await this.#dependencies.resolveCredential(
-            account,
-            context,
+      const loaded: PluginAccountRuntime[] = [];
+      for (const account of enabledAccounts) {
+        this.#dependencies.validateCredentialTarget(account, context);
+        if (!(await this.#dependencies.credentialExists(account, context))) {
+          continue;
+        }
+        const credential = await this.#dependencies.resolveCredential(
+          account,
+          context,
+        );
+        try {
+          loaded.push(
+            await this.#loadAccountWithRateLimitRetry(
+              account,
+              credential,
+              context.signal,
+            ),
           );
-          try {
-            return await this.#loadAccount(account, credential, context.signal);
-          } catch (error) {
-            if (isRejectedCredential(error)) {
-              this.#dependencies.onAccountLoadError(account, error);
-              return undefined;
-            }
-            throw error;
+        } catch (error) {
+          if (isRejectedCredential(error)) {
+            this.#dependencies.onAccountLoadError(account, error);
+            continue;
           }
-        }),
-      );
-      const loaded = candidates.filter(
-        (runtime): runtime is PluginAccountRuntime => runtime !== undefined,
-      );
+          throw error;
+        }
+      }
       assertUniqueResolvedMailAccounts(loaded);
       this.#runtimes = new Map(
         loaded.map((runtime) => [runtime.config.pluginAccountId, runtime]),
@@ -192,11 +198,12 @@ export class PluginAccountRuntimeRegistry {
     signal?: AbortSignal,
   ): Promise<PluginAccountRuntime> {
     const client = this.#dependencies.createClient(account, credential);
-    const [mailboxAddress, mailAccountId, inboxMailboxId] = await Promise.all([
-      client.getIdentityAddress(signal),
-      client.getMailAccountId(signal),
-      client.getInboxMailboxId(signal),
-    ]);
+    // Keep authentication-bearing startup requests serial. A rejected
+    // credential must consume one failed authentication attempt, not one per
+    // identity/JMAP/Inbox request fired in parallel.
+    const mailboxAddress = await client.getIdentityAddress(signal);
+    const mailAccountId = await client.getMailAccountId(signal);
+    const inboxMailboxId = await client.getInboxMailboxId(signal);
     return Object.freeze({
       config: account,
       client,
@@ -204,6 +211,22 @@ export class PluginAccountRuntimeRegistry {
       mailAccountId,
       inboxMailboxId,
     });
+  }
+
+  async #loadAccountWithRateLimitRetry(
+    account: PluginAccountConfig,
+    credential: string,
+    signal?: AbortSignal,
+  ): Promise<PluginAccountRuntime> {
+    try {
+      return await this.#loadAccount(account, credential, signal);
+    } catch (error) {
+      if (!isRateLimited(error)) {
+        throw error;
+      }
+      await this.#dependencies.sleep(RATE_LIMIT_RETRY_DELAY_MS, signal);
+      return await this.#loadAccount(account, credential, signal);
+    }
   }
 
   #requireStarted(): ReadonlyMap<string, PluginAccountRuntime> {
@@ -214,6 +237,33 @@ export class PluginAccountRuntimeRegistry {
     }
     return this.#runtimes;
   }
+}
+
+function isRateLimited(error: unknown): boolean {
+  return error instanceof MailClientError && error.code === "rate_limited";
+}
+
+async function sleepWithSignal(
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted === true) {
+    throw signal.reason ?? new Error("Plugin Account startup was aborted");
+  }
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, milliseconds);
+    const onAbort = () => {
+      clearTimeout(timeout);
+      cleanup();
+      reject(signal?.reason ?? new Error("Plugin Account startup was aborted"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timeout.unref?.();
+  });
 }
 
 async function defaultCredentialExists(
