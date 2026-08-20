@@ -71,9 +71,12 @@ export class PluginAccountRuntimeRegistry {
   readonly #dependencies: Required<AccountRuntimeRegistryDependencies>;
   #runtimes: ReadonlyMap<string, PluginAccountRuntime> | undefined;
   #credentialFingerprints: ReadonlyMap<string, string> | undefined;
-  readonly #storedActivations = new Map<
+  readonly #activations = new Map<
     string,
-    Promise<PluginAccountRuntime>
+    {
+      credentialFingerprint: string;
+      operation: Promise<PluginAccountRuntime>;
+    }
   >();
   #starting = false;
 
@@ -157,10 +160,42 @@ export class PluginAccountRuntimeRegistry {
   stop(): void {
     this.#runtimes = undefined;
     this.#credentialFingerprints = undefined;
-    this.#storedActivations.clear();
+    this.#activations.clear();
   }
 
   async activate(
+    account: PluginAccountConfig,
+    credential: string,
+    signal?: AbortSignal,
+  ): Promise<PluginAccountRuntime> {
+    const credentialFingerprint = fingerprintCredential(credential);
+    const currentOperation = this.#activations.get(account.pluginAccountId);
+    if (currentOperation !== undefined) {
+      if (
+        currentOperation.credentialFingerprint === credentialFingerprint
+      ) {
+        return await currentOperation.operation;
+      }
+      try {
+        await currentOperation.operation;
+      } catch {
+        // A different credential failed. Continue with the newer activation.
+      }
+      return await this.activate(account, credential, signal);
+    }
+    const operation = this.#activate(account, credential, signal);
+    const activation = { credentialFingerprint, operation };
+    this.#activations.set(account.pluginAccountId, activation);
+    try {
+      return await operation;
+    } finally {
+      if (this.#activations.get(account.pluginAccountId) === activation) {
+        this.#activations.delete(account.pluginAccountId);
+      }
+    }
+  }
+
+  async #activate(
     account: PluginAccountConfig,
     credential: string,
     signal?: AbortSignal,
@@ -184,21 +219,15 @@ export class PluginAccountRuntimeRegistry {
     account: PluginAccountConfig,
     context: AccountRuntimeStartContext,
   ): Promise<PluginAccountRuntime> {
-    const currentOperation = this.#storedActivations.get(
-      account.pluginAccountId,
-    );
-    if (currentOperation !== undefined) {
-      return await currentOperation;
-    }
-    const operation = this.#activateStored(account, context);
-    this.#storedActivations.set(account.pluginAccountId, operation);
-    try {
-      return await operation;
-    } finally {
-      if (this.#storedActivations.get(account.pluginAccountId) === operation) {
-        this.#storedActivations.delete(account.pluginAccountId);
-      }
-    }
+    return await this.#activateStored(account, context);
+  }
+
+  async activateStoredIfFingerprintMatches(
+    account: PluginAccountConfig,
+    context: AccountRuntimeStartContext,
+    expectedFingerprint: string,
+  ): Promise<PluginAccountRuntime | undefined> {
+    return await this.#activateStored(account, context, expectedFingerprint);
   }
 
   async getStoredCredentialFingerprint(
@@ -217,7 +246,17 @@ export class PluginAccountRuntimeRegistry {
   async #activateStored(
     account: PluginAccountConfig,
     context: AccountRuntimeStartContext,
-  ): Promise<PluginAccountRuntime> {
+  ): Promise<PluginAccountRuntime>;
+  async #activateStored(
+    account: PluginAccountConfig,
+    context: AccountRuntimeStartContext,
+    expectedFingerprint: string,
+  ): Promise<PluginAccountRuntime | undefined>;
+  async #activateStored(
+    account: PluginAccountConfig,
+    context: AccountRuntimeStartContext,
+    expectedFingerprint?: string,
+  ): Promise<PluginAccountRuntime | undefined> {
     this.#dependencies.validateCredentialTarget(account, context);
     if (!(await this.#dependencies.credentialExists(account, context))) {
       throw new PluginAccountRoutingError(
@@ -228,11 +267,18 @@ export class PluginAccountRuntimeRegistry {
       account,
       context,
     );
+    const credentialFingerprint = fingerprintCredential(credential);
+    if (
+      expectedFingerprint !== undefined &&
+      credentialFingerprint !== expectedFingerprint
+    ) {
+      return undefined;
+    }
     const current = this.#requireStarted().get(account.pluginAccountId);
     if (
       current !== undefined &&
       this.#requireCredentialFingerprints().get(account.pluginAccountId) ===
-        fingerprintCredential(credential)
+        credentialFingerprint
     ) {
       return current;
     }

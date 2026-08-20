@@ -91,6 +91,34 @@ describe("stored credential activation watcher", () => {
     await watcher.stop();
   });
 
+  it("does not suppress a replacement written during a rejected activation", async () => {
+    let fingerprint = "rejected";
+    const rejected = new MailClientError({
+      code: "unauthorized",
+      message: "rejected",
+      status: 401,
+    });
+    const attemptedFingerprints: string[] = [];
+    const activate = vi.fn(async (_account, attemptedFingerprint: string) => {
+      attemptedFingerprints.push(attemptedFingerprint);
+      if (attemptedFingerprint === "rejected") {
+        fingerprint = "replacement";
+        throw rejected;
+      }
+    });
+    const watcher = createWatcher({
+      getFingerprint: async () => fingerprint,
+      activate,
+    });
+    watcher.start();
+
+    await watcher.checkNow();
+    await watcher.checkNow();
+
+    expect(attemptedFingerprints).toEqual(["rejected", "replacement"]);
+    await watcher.stop();
+  });
+
   it("does not activate disabled accounts", async () => {
     const activate = vi.fn(async () => undefined);
     const watcher = new StoredCredentialActivationWatcher({
@@ -110,7 +138,10 @@ describe("stored credential activation watcher", () => {
 
 function createWatcher(overrides: {
   getFingerprint: () => Promise<string | undefined>;
-  activate: () => void | Promise<void>;
+  activate: (
+    account: PluginAccountConfig,
+    fingerprint: string,
+  ) => void | boolean | Promise<void | boolean>;
   onError?: (account: PluginAccountConfig, error: unknown) => void;
 }): StoredCredentialActivationWatcher {
   return new StoredCredentialActivationWatcher({

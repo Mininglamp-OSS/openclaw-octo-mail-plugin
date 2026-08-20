@@ -23,6 +23,7 @@ export interface AccountDiscoveryManagerOptions {
 interface ActiveDiscovery {
   controller: AbortController;
   loop: Promise<void>;
+  runtime: PluginAccountRuntime;
 }
 
 /** Owns one non-overlapping JMAP Email/changes loop per active Plugin Account. */
@@ -72,6 +73,9 @@ export class AccountDiscoveryManager {
     if (this.#stateDir === undefined || this.#stopPromise !== undefined) {
       return;
     }
+    if (this.#active.get(runtime.config.pluginAccountId)?.runtime === runtime) {
+      return;
+    }
     await this.#stopAccount(runtime.config.pluginAccountId);
     if (this.#stateDir === undefined || this.#stopPromise !== undefined) {
       return;
@@ -97,7 +101,12 @@ export class AccountDiscoveryManager {
       maxChanges: runtime.config.discovery.maxChanges,
     });
     const loop = this.#runLoop(runtime, poller, controller.signal);
-    this.#active.set(runtime.config.pluginAccountId, { controller, loop });
+    const active = { controller, loop, runtime };
+    this.#active.set(runtime.config.pluginAccountId, active);
+    void loop.then(
+      () => this.#removeCompleted(runtime.config.pluginAccountId, active),
+      () => this.#removeCompleted(runtime.config.pluginAccountId, active),
+    );
     this.#options.logger.info(
       `[octo-mail] mail discovery started for Plugin Account ${runtime.config.pluginAccountId}`,
     );
@@ -265,6 +274,15 @@ export class AccountDiscoveryManager {
     this.#active.delete(pluginAccountId);
     active.controller.abort(new Error("mail discovery stopped"));
     await active.loop;
+  }
+
+  #removeCompleted(
+    pluginAccountId: string,
+    active: ActiveDiscovery,
+  ): void {
+    if (this.#active.get(pluginAccountId) === active) {
+      this.#active.delete(pluginAccountId);
+    }
   }
 }
 

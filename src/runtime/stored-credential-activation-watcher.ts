@@ -6,7 +6,10 @@ export interface StoredCredentialActivationWatcherOptions {
   getFingerprint: (
     account: PluginAccountConfig,
   ) => Promise<string | undefined>;
-  activate: (account: PluginAccountConfig) => void | Promise<void>;
+  activate: (
+    account: PluginAccountConfig,
+    fingerprint: string,
+  ) => void | boolean | Promise<void | boolean>;
   onError: (account: PluginAccountConfig, error: unknown) => void;
   intervalMs: number;
 }
@@ -71,8 +74,9 @@ export class StoredCredentialActivationWatcher {
     for (const account of this.#options.listAccounts()) {
       if (!this.#started) return;
       if (!account.enabled) continue;
+      let fingerprint: string | undefined;
       try {
-        const fingerprint = await this.#options.getFingerprint(account);
+        fingerprint = await this.#options.getFingerprint(account);
         if (!this.#started) return;
         if (fingerprint === undefined) {
           this.#observedFingerprints.delete(account.pluginAccountId);
@@ -83,28 +87,18 @@ export class StoredCredentialActivationWatcher {
         ) {
           continue;
         }
-        await this.#options.activate(account);
+        const activated = await this.#options.activate(account, fingerprint);
+        if (activated === false) {
+          continue;
+        }
         this.#observedFingerprints.set(account.pluginAccountId, fingerprint);
       } catch (error) {
         if (!this.#started) return;
-        if (isRejectedCredential(error)) {
-          const fingerprint = await this.#safeFingerprint(account);
-          if (fingerprint !== undefined) {
-            this.#observedFingerprints.set(account.pluginAccountId, fingerprint);
-          }
+        if (isRejectedCredential(error) && fingerprint !== undefined) {
+          this.#observedFingerprints.set(account.pluginAccountId, fingerprint);
         }
         this.#options.onError(account, error);
       }
-    }
-  }
-
-  async #safeFingerprint(
-    account: PluginAccountConfig,
-  ): Promise<string | undefined> {
-    try {
-      return await this.#options.getFingerprint(account);
-    } catch {
-      return undefined;
     }
   }
 }

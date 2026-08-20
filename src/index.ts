@@ -95,18 +95,23 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
       pluginAccountId: string,
       context: { config: typeof api.config; stateDir: string },
     ) => {
-      const previousRuntime = (() => {
-        try {
-          return accountRuntimes.getById(pluginAccountId);
-        } catch {
-          return undefined;
-        }
-      })();
-      const runtime = await accountRuntimes.activateStored(
-        accountCatalog.getById(pluginAccountId),
-        context,
-      );
-      if (runtime !== previousRuntime) {
+      const account = accountCatalog.getById(pluginAccountId);
+      const runtime = await accountRuntimes.activateStored(account, context);
+      await discoveryManager?.activate(runtime);
+      return runtime;
+    };
+    const activateStoredRuntimeIfFingerprintMatches = async (
+      pluginAccountId: string,
+      context: { config: typeof api.config; stateDir: string },
+      expectedFingerprint: string,
+    ) => {
+      const runtime =
+        await accountRuntimes.activateStoredIfFingerprintMatches(
+          accountCatalog.getById(pluginAccountId),
+          context,
+          expectedFingerprint,
+        );
+      if (runtime !== undefined) {
         await discoveryManager?.activate(runtime);
       }
       return runtime;
@@ -248,11 +253,16 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
                 config: ctx.config,
                 stateDir: ctx.stateDir,
               }),
-            activate: async (account) => {
-              await activateStoredRuntime(account.pluginAccountId, {
-                config: ctx.config,
-                stateDir: ctx.stateDir,
-              });
+            activate: async (account, fingerprint) => {
+              const runtime = await activateStoredRuntimeIfFingerprintMatches(
+                account.pluginAccountId,
+                {
+                  config: ctx.config,
+                  stateDir: ctx.stateDir,
+                },
+                fingerprint,
+              );
+              return runtime !== undefined;
             },
             onError: (account, error) => {
               api.logger.error(
