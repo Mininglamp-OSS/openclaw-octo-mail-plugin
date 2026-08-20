@@ -76,6 +76,42 @@ describe("AgentMailRuntimeController", () => {
     expect(createAuthorizationService).not.toHaveBeenCalled();
   });
 
+  it("cancels an in-progress startup when the Gateway service stops", async () => {
+    let startSignal: AbortSignal | undefined;
+    const start = vi.fn(
+      async (context: { signal?: AbortSignal }) =>
+        await new Promise<void>((_resolve, reject) => {
+          startSignal = context.signal;
+          context.signal?.addEventListener(
+            "abort",
+            () => reject(context.signal?.reason),
+            { once: true },
+          );
+        }),
+    );
+    const stop = vi.fn();
+    const createAuthorizationService = vi.fn(
+      () =>
+        ({ stop: vi.fn(async () => undefined) }) as unknown as AgentMailAuthorizationService,
+    );
+    const controller = createController({
+      start,
+      stop,
+      createAuthorizationService,
+    });
+
+    const starting = controller.ensureStarted();
+    const startRejected = expect(starting).rejects.toThrow(
+      "Agent Mail runtime startup stopped",
+    );
+
+    await expect(controller.stop()).resolves.toBeUndefined();
+    await startRejected;
+    expect(startSignal?.aborted).toBe(true);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(createAuthorizationService).not.toHaveBeenCalled();
+  });
+
   it("stops idempotently and can restart after a Gateway service reload", async () => {
     const stop = vi.fn();
     const logStopped = vi.fn();

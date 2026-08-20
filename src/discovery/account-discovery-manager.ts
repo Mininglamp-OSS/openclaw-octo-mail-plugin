@@ -29,6 +29,7 @@ interface ActiveDiscovery {
 export class AccountDiscoveryManager {
   readonly #options: AccountDiscoveryManagerOptions;
   readonly #active = new Map<string, ActiveDiscovery>();
+  readonly #activations = new Map<string, Promise<void>>();
   #stateDir: string | undefined;
   #stopPromise: Promise<void> | undefined;
 
@@ -53,10 +54,28 @@ export class AccountDiscoveryManager {
   }
 
   async activate(runtime: PluginAccountRuntime): Promise<void> {
+    const pluginAccountId = runtime.config.pluginAccountId;
+    const previous = this.#activations.get(pluginAccountId);
+    const operation = (previous?.catch(() => undefined) ?? Promise.resolve())
+      .then(async () => await this.#activate(runtime));
+    this.#activations.set(pluginAccountId, operation);
+    try {
+      await operation;
+    } finally {
+      if (this.#activations.get(pluginAccountId) === operation) {
+        this.#activations.delete(pluginAccountId);
+      }
+    }
+  }
+
+  async #activate(runtime: PluginAccountRuntime): Promise<void> {
     if (this.#stateDir === undefined || this.#stopPromise !== undefined) {
       return;
     }
     await this.#stopAccount(runtime.config.pluginAccountId);
+    if (this.#stateDir === undefined || this.#stopPromise !== undefined) {
+      return;
+    }
     if (!runtime.config.discovery.enabled) {
       return;
     }

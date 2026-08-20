@@ -6,6 +6,7 @@ import type { AgentMailAuthorizationService } from "../auth/agent-mail-authoriza
 export interface AgentMailRuntimeStartContext {
   config: OpenClawConfig;
   stateDir: string;
+  signal?: AbortSignal;
 }
 
 export interface AgentMailRuntimeControllerOptions {
@@ -37,6 +38,7 @@ export class AgentMailRuntimeController {
   readonly #options: AgentMailRuntimeControllerOptions;
   #authorizationService: AgentMailAuthorizationService | undefined;
   #startPromise: Promise<AgentMailAuthorizationService> | undefined;
+  #startController: AbortController | undefined;
   #stopPromise: Promise<void> | undefined;
   #runtimeResourcesStarted = false;
 
@@ -57,11 +59,28 @@ export class AgentMailRuntimeController {
       return await this.#startPromise;
     }
 
-    this.#startPromise = this.#start(context);
+    const controller = new AbortController();
+    const abortFromContext = () => controller.abort(context.signal?.reason);
+    if (context.signal?.aborted === true) {
+      abortFromContext();
+    } else {
+      context.signal?.addEventListener("abort", abortFromContext, {
+        once: true,
+      });
+    }
+    const operation = this.#start({ ...context, signal: controller.signal });
+    this.#startController = controller;
+    this.#startPromise = operation;
     try {
-      return await this.#startPromise;
+      return await operation;
     } finally {
-      this.#startPromise = undefined;
+      context.signal?.removeEventListener("abort", abortFromContext);
+      if (this.#startPromise === operation) {
+        this.#startPromise = undefined;
+      }
+      if (this.#startController === controller) {
+        this.#startController = undefined;
+      }
     }
   }
 
@@ -81,6 +100,9 @@ export class AgentMailRuntimeController {
   }
 
   async #stop(): Promise<void> {
+    this.#startController?.abort(
+      new Error("Agent Mail runtime startup stopped"),
+    );
     try {
       await this.#startPromise;
     } catch {

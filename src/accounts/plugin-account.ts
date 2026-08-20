@@ -36,10 +36,10 @@ export class PluginAccountRoutingError extends Error {
   }
 }
 
-/** Immutable indexes over already validated Plugin Account configuration. */
+/** Validated indexes over trusted Plugin Account configuration. */
 export class PluginAccountCatalog {
-  readonly #byId: ReadonlyMap<string, PluginAccountConfig>;
-  readonly #byAgentId: ReadonlyMap<string, readonly PluginAccountConfig[]>;
+  #byId: ReadonlyMap<string, PluginAccountConfig>;
+  #byAgentId: ReadonlyMap<string, readonly PluginAccountConfig[]>;
 
   constructor(accounts: readonly PluginAccountConfig[]) {
     const byId = new Map<string, PluginAccountConfig>();
@@ -95,6 +95,31 @@ export class PluginAccountCatalog {
     return this.#byAgentId.get(agentId) ?? [];
   }
 
+  /**
+   * Add an account discovered by another registration context in this Gateway.
+   * Existing ids must remain semantically equivalent so a credential event
+   * cannot silently retarget an already trusted runtime binding.
+   */
+  register(account: PluginAccountConfig): PluginAccountConfig {
+    const existing = this.#byId.get(account.pluginAccountId);
+    if (existing !== undefined) {
+      if (!samePluginAccountConfig(existing, account)) {
+        throw new PluginAccountRoutingError(
+          `Plugin Account ${account.pluginAccountId} changed configuration; a Gateway reload is required`,
+        );
+      }
+      return existing;
+    }
+
+    const replacement = new PluginAccountCatalog([
+      ...this.#byId.values(),
+      account,
+    ]);
+    this.#byId = replacement.#byId;
+    this.#byAgentId = replacement.#byAgentId;
+    return this.getById(account.pluginAccountId);
+  }
+
   getSingleEnabledByAgentId(agentId: string): PluginAccountConfig {
     const accounts = this.listByAgentId(agentId);
     if (accounts.length === 0) {
@@ -109,6 +134,38 @@ export class PluginAccountCatalog {
     }
     return accounts[0]!;
   }
+}
+
+function samePluginAccountConfig(
+  left: PluginAccountConfig,
+  right: PluginAccountConfig,
+): boolean {
+  return (
+    left.pluginAccountId === right.pluginAccountId &&
+    left.enabled === right.enabled &&
+    left.agentId === right.agentId &&
+    left.botId === right.botId &&
+    left.botProfile === right.botProfile &&
+    left.apiBaseUrl === right.apiBaseUrl &&
+    sameCredentialRef(left.credentialRef, right.credentialRef) &&
+    left.discovery.enabled === right.discovery.enabled &&
+    left.discovery.pollIntervalMs === right.discovery.pollIntervalMs &&
+    left.discovery.maxChanges === right.discovery.maxChanges
+  );
+}
+
+function sameCredentialRef(
+  left: SecretRef | undefined,
+  right: SecretRef | undefined,
+): boolean {
+  return (
+    left === right ||
+    (left !== undefined &&
+      right !== undefined &&
+      left.source === right.source &&
+      left.provider === right.provider &&
+      left.id === right.id)
+  );
 }
 
 function freezeAccount(account: PluginAccountConfig): PluginAccountConfig {

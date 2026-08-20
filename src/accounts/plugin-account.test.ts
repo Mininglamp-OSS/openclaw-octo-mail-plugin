@@ -161,6 +161,23 @@ describe("Reliable Plugin Account configuration", () => {
       PluginAccountRoutingError,
     );
   });
+
+  it("registers a newly discovered account without retargeting existing ids", () => {
+    const [support, sales] = parseReliablePluginConfig({
+      accounts: [
+        accountInput("support", "support-agent", "support_file"),
+        accountInput("sales", "sales-agent", "sales_file"),
+      ],
+    }).accounts;
+    const catalog = new PluginAccountCatalog([support!]);
+
+    expect(catalog.register(sales!)).toEqual(sales);
+    expect(catalog.getSingleEnabledByAgentId("sales-agent")).toEqual(sales);
+    expect(catalog.register({ ...support! })).toEqual(support);
+    expect(() =>
+      catalog.register({ ...support!, agentId: "other-agent" }),
+    ).toThrow(/changed configuration/);
+  });
 });
 
 function accountInput(
