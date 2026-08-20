@@ -239,6 +239,84 @@ describe("AccountDiscoveryManager", () => {
 
     expect(signals.every((signal) => signal.aborted)).toBe(true);
   });
+
+  it("does not restart discovery for concurrent activation of one runtime", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "octo-mail-same-runtime-"));
+    temporaryDirectories.push(stateDir);
+    const signals: AbortSignal[] = [];
+    const client = {
+      getMailAccountId: vi.fn(
+        async (signal?: AbortSignal) =>
+          await new Promise<string>((_resolve, reject) => {
+            if (signal === undefined) {
+              reject(new Error("missing discovery signal"));
+              return;
+            }
+            signals.push(signal);
+            signal.addEventListener(
+              "abort",
+              () => reject(signal.reason),
+              { once: true },
+            );
+          }),
+      ),
+    } as unknown as AccountMailClient;
+    const manager = new AccountDiscoveryManager({
+      logger: logger(),
+      createDispatcher: () => ({ dispatch: vi.fn() }),
+    });
+    const sharedRuntime = runtime(client);
+
+    await manager.start(stateDir, []);
+    await Promise.all([
+      manager.activate(sharedRuntime),
+      manager.activate(sharedRuntime),
+    ]);
+
+    expect(signals).toHaveLength(1);
+    await manager.stop();
+  });
+
+  it("retries discovery binding after activation fails", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "octo-mail-bind-retry-"));
+    temporaryDirectories.push(stateDir);
+    const createDispatcher = vi
+      .fn((_runtime: PluginAccountRuntime) => ({
+        dispatch: vi.fn(async () => undefined),
+      }))
+      .mockImplementationOnce(() => {
+        throw new Error("temporary discovery activation failure");
+      })
+      .mockImplementation(() => ({
+        dispatch: vi.fn(async () => undefined),
+      }));
+    const client = {
+      getMailAccountId: vi.fn(
+        async (signal?: AbortSignal) =>
+          await new Promise<string>((_resolve, reject) => {
+            signal?.addEventListener(
+              "abort",
+              () => reject(signal.reason),
+              { once: true },
+            );
+          }),
+      ),
+    } as unknown as AccountMailClient;
+    const manager = new AccountDiscoveryManager({
+      logger: logger(),
+      createDispatcher,
+    });
+    const sharedRuntime = runtime(client);
+
+    await manager.start(stateDir, []);
+    await expect(manager.activate(sharedRuntime)).rejects.toThrow(
+      /temporary discovery activation failure/,
+    );
+    await expect(manager.activate(sharedRuntime)).resolves.toBeUndefined();
+
+    expect(createDispatcher).toHaveBeenCalledTimes(2);
+    await manager.stop();
+  });
 });
 
 function runtime(client: AccountMailClient): PluginAccountRuntime {

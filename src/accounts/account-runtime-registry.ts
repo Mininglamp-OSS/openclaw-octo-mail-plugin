@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/plugin-entry";
+import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 
 import {
@@ -69,6 +70,14 @@ export class PluginAccountRuntimeRegistry {
   readonly #catalog: PluginAccountCatalog;
   readonly #dependencies: Required<AccountRuntimeRegistryDependencies>;
   #runtimes: ReadonlyMap<string, PluginAccountRuntime> | undefined;
+  #credentialFingerprints: ReadonlyMap<string, string> | undefined;
+  readonly #activations = new Map<
+    string,
+    {
+      credentialFingerprint: string;
+      operation: Promise<PluginAccountRuntime>;
+    }
+  >();
   #starting = false;
 
   constructor(
@@ -99,7 +108,10 @@ export class PluginAccountRuntimeRegistry {
       const enabledAccounts = this.#catalog
         .listAll()
         .filter((account) => account.enabled);
-      const loaded: PluginAccountRuntime[] = [];
+      const loaded: Array<{
+        runtime: PluginAccountRuntime;
+        credentialFingerprint: string;
+      }> = [];
       for (const account of enabledAccounts) {
         this.#dependencies.validateCredentialTarget(account, context);
         if (!(await this.#dependencies.credentialExists(account, context))) {
@@ -110,13 +122,14 @@ export class PluginAccountRuntimeRegistry {
           context,
         );
         try {
-          loaded.push(
-            await this.#loadAccountWithRateLimitRetry(
+          loaded.push({
+            runtime: await this.#loadAccountWithRateLimitRetry(
               account,
               credential,
               context.signal,
             ),
-          );
+            credentialFingerprint: fingerprintCredential(credential),
+          });
         } catch (error) {
           if (isRejectedCredential(error)) {
             this.#dependencies.onAccountLoadError(account, error);
@@ -125,9 +138,19 @@ export class PluginAccountRuntimeRegistry {
           throw error;
         }
       }
-      assertUniqueResolvedMailAccounts(loaded);
+      const loadedRuntimes = loaded.map((item) => item.runtime);
+      assertUniqueResolvedMailAccounts(loadedRuntimes);
       this.#runtimes = new Map(
-        loaded.map((runtime) => [runtime.config.pluginAccountId, runtime]),
+        loadedRuntimes.map((runtime) => [
+          runtime.config.pluginAccountId,
+          runtime,
+        ]),
+      );
+      this.#credentialFingerprints = new Map(
+        loaded.map((item) => [
+          item.runtime.config.pluginAccountId,
+          item.credentialFingerprint,
+        ]),
       );
     } finally {
       this.#starting = false;
@@ -136,9 +159,43 @@ export class PluginAccountRuntimeRegistry {
 
   stop(): void {
     this.#runtimes = undefined;
+    this.#credentialFingerprints = undefined;
+    this.#activations.clear();
   }
 
   async activate(
+    account: PluginAccountConfig,
+    credential: string,
+    signal?: AbortSignal,
+  ): Promise<PluginAccountRuntime> {
+    const credentialFingerprint = fingerprintCredential(credential);
+    const currentOperation = this.#activations.get(account.pluginAccountId);
+    if (currentOperation !== undefined) {
+      if (
+        currentOperation.credentialFingerprint === credentialFingerprint
+      ) {
+        return await currentOperation.operation;
+      }
+      try {
+        await currentOperation.operation;
+      } catch {
+        // A different credential failed. Continue with the newer activation.
+      }
+      return await this.activate(account, credential, signal);
+    }
+    const operation = this.#activate(account, credential, signal);
+    const activation = { credentialFingerprint, operation };
+    this.#activations.set(account.pluginAccountId, activation);
+    try {
+      return await operation;
+    } finally {
+      if (this.#activations.get(account.pluginAccountId) === activation) {
+        this.#activations.delete(account.pluginAccountId);
+      }
+    }
+  }
+
+  async #activate(
     account: PluginAccountConfig,
     credential: string,
     signal?: AbortSignal,
@@ -152,6 +209,9 @@ export class PluginAccountRuntimeRegistry {
       runtime,
     ]);
     this.#runtimes = new Map(current).set(account.pluginAccountId, runtime);
+    this.#credentialFingerprints = new Map(
+      this.#requireCredentialFingerprints(),
+    ).set(account.pluginAccountId, fingerprintCredential(credential));
     return runtime;
   }
 
@@ -159,6 +219,44 @@ export class PluginAccountRuntimeRegistry {
     account: PluginAccountConfig,
     context: AccountRuntimeStartContext,
   ): Promise<PluginAccountRuntime> {
+    return await this.#activateStored(account, context);
+  }
+
+  async activateStoredIfFingerprintMatches(
+    account: PluginAccountConfig,
+    context: AccountRuntimeStartContext,
+    expectedFingerprint: string,
+  ): Promise<PluginAccountRuntime | undefined> {
+    return await this.#activateStored(account, context, expectedFingerprint);
+  }
+
+  async getStoredCredentialFingerprint(
+    account: PluginAccountConfig,
+    context: AccountRuntimeStartContext,
+  ): Promise<string | undefined> {
+    this.#dependencies.validateCredentialTarget(account, context);
+    if (!(await this.#dependencies.credentialExists(account, context))) {
+      return undefined;
+    }
+    return fingerprintCredential(
+      await this.#dependencies.resolveCredential(account, context),
+    );
+  }
+
+  async #activateStored(
+    account: PluginAccountConfig,
+    context: AccountRuntimeStartContext,
+  ): Promise<PluginAccountRuntime>;
+  async #activateStored(
+    account: PluginAccountConfig,
+    context: AccountRuntimeStartContext,
+    expectedFingerprint: string,
+  ): Promise<PluginAccountRuntime | undefined>;
+  async #activateStored(
+    account: PluginAccountConfig,
+    context: AccountRuntimeStartContext,
+    expectedFingerprint?: string,
+  ): Promise<PluginAccountRuntime | undefined> {
     this.#dependencies.validateCredentialTarget(account, context);
     if (!(await this.#dependencies.credentialExists(account, context))) {
       throw new PluginAccountRoutingError(
@@ -169,6 +267,21 @@ export class PluginAccountRuntimeRegistry {
       account,
       context,
     );
+    const credentialFingerprint = fingerprintCredential(credential);
+    if (
+      expectedFingerprint !== undefined &&
+      credentialFingerprint !== expectedFingerprint
+    ) {
+      return undefined;
+    }
+    const current = this.#requireStarted().get(account.pluginAccountId);
+    if (
+      current !== undefined &&
+      this.#requireCredentialFingerprints().get(account.pluginAccountId) ===
+        credentialFingerprint
+    ) {
+      return current;
+    }
     return await this.activate(account, credential, context.signal);
   }
 
@@ -237,6 +350,19 @@ export class PluginAccountRuntimeRegistry {
     }
     return this.#runtimes;
   }
+
+  #requireCredentialFingerprints(): ReadonlyMap<string, string> {
+    if (this.#credentialFingerprints === undefined) {
+      throw new PluginAccountRoutingError(
+        "octo-mail account runtime registry is not started",
+      );
+    }
+    return this.#credentialFingerprints;
+  }
+}
+
+function fingerprintCredential(credential: string): string {
+  return createHash("sha256").update(credential, "utf8").digest("hex");
 }
 
 function isRateLimited(error: unknown): boolean {
