@@ -33,6 +33,9 @@ import {
   subscribeCredentialActivation,
 } from "./runtime/credential-activation-bus.js";
 import { FileMailWorkflowStateStore } from "./runtime/mail-workflow-state-store.js";
+import { StoredCredentialActivationWatcher } from "./runtime/stored-credential-activation-watcher.js";
+
+const STORED_CREDENTIAL_WATCH_INTERVAL_MS = 5_000;
 
 const plugin: OpenClawPluginDefinition = definePluginEntry({
   id: PLUGIN_ID,
@@ -88,6 +91,26 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
             ),
         })
       : undefined;
+    const activateStoredRuntime = async (
+      pluginAccountId: string,
+      context: { config: typeof api.config; stateDir: string },
+    ) => {
+      const previousRuntime = (() => {
+        try {
+          return accountRuntimes.getById(pluginAccountId);
+        } catch {
+          return undefined;
+        }
+      })();
+      const runtime = await accountRuntimes.activateStored(
+        accountCatalog.getById(pluginAccountId),
+        context,
+      );
+      if (runtime !== previousRuntime) {
+        await discoveryManager?.activate(runtime);
+      }
+      return runtime;
+    };
     const runtimeController = new AgentMailRuntimeController({
       accountRuntimes,
       defaultContext: {
@@ -142,15 +165,10 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
           },
           activateStoredRuntime: async (pluginAccountId) => {
             await runtimeController.ensureStarted();
-            const runtime = await accountRuntimes.activateStored(
-              accountCatalog.getById(pluginAccountId),
-              {
-                config: api.config,
-                stateDir: resolveStateDir(),
-              },
-            );
-            await discoveryManager?.activate(runtime);
-            return runtime;
+            return await activateStoredRuntime(pluginAccountId, {
+              config: api.config,
+              stateDir: resolveStateDir(),
+            });
           },
           ownerDraftNotifier,
         }),
@@ -200,6 +218,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
 
     if (discoveryManager !== undefined) {
       let unsubscribeCredentialActivation: (() => void) | undefined;
+      let credentialWatcher: StoredCredentialActivationWatcher | undefined;
       api.registerService({
         id: MAIL_AUTHORIZATION_SERVICE_ID,
         async start(ctx) {
@@ -207,11 +226,10 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
             async (account) => {
               try {
                 const registeredAccount = accountCatalog.register(account);
-                const runtime = await accountRuntimes.activateStored(
-                  registeredAccount,
+                await activateStoredRuntime(
+                  registeredAccount.pluginAccountId,
                   { config: ctx.config, stateDir: ctx.stateDir },
                 );
-                await discoveryManager.activate(runtime);
               } catch (error) {
                 api.logger.error(
                   `[octo-mail] failed to activate newly stored credential for Plugin Account ${account.pluginAccountId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -223,10 +241,33 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
             config: ctx.config,
             stateDir: ctx.stateDir,
           });
+          credentialWatcher = new StoredCredentialActivationWatcher({
+            listAccounts: () => accountCatalog.listAll(),
+            getFingerprint: async (account) =>
+              await accountRuntimes.getStoredCredentialFingerprint(account, {
+                config: ctx.config,
+                stateDir: ctx.stateDir,
+              }),
+            activate: async (account) => {
+              await activateStoredRuntime(account.pluginAccountId, {
+                config: ctx.config,
+                stateDir: ctx.stateDir,
+              });
+            },
+            onError: (account, error) => {
+              api.logger.error(
+                `[octo-mail] failed to activate stored credential for Plugin Account ${account.pluginAccountId}: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            },
+            intervalMs: STORED_CREDENTIAL_WATCH_INTERVAL_MS,
+          });
+          credentialWatcher.start();
         },
         async stop() {
           unsubscribeCredentialActivation?.();
           unsubscribeCredentialActivation = undefined;
+          await credentialWatcher?.stop();
+          credentialWatcher = undefined;
           await runtimeController.stop();
         },
       });

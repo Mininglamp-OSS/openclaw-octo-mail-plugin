@@ -51,6 +51,54 @@ describe("Plugin Account runtime registry", () => {
     });
   });
 
+  it("reloads a credential rotated in private storage by another process", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "octo-mail-rotation-"));
+    const account = {
+      pluginAccountId: "mail_bot_rotation_hash",
+      enabled: true,
+      agentId: "rotation-agent",
+      botId: "bot-rotation",
+      apiBaseUrl: TEST_OCTO_ORIGIN,
+      discovery: { enabled: true, pollIntervalMs: 5_000, maxChanges: 100 },
+    };
+    const target = resolvePluginAccountCredentialTarget({
+      stateDir,
+      pluginAccountId: account.pluginAccountId,
+      config: {} as OpenClawConfig,
+    });
+    await writePrivateAgentMailCredential(target, testCredential("old"));
+    const seenCredentials: string[] = [];
+    const registry = new PluginAccountRuntimeRegistry(
+      new PluginAccountCatalog([account]),
+      {
+        createClient: (_account, credential) => {
+          seenCredentials.push(credential);
+          return fakeClient("mail-rotation", "inbox-rotation");
+        },
+      },
+    );
+    const context = { config: {} as OpenClawConfig, stateDir };
+    await registry.start(context);
+    const oldRuntime = registry.getById(account.pluginAccountId);
+
+    await writePrivateAgentMailCredential(target, testCredential("new"));
+    const [first, second] = await Promise.all([
+      registry.activateStored(account, context),
+      registry.activateStored(account, context),
+    ]);
+
+    expect(first).toBe(second);
+    expect(first).not.toBe(oldRuntime);
+    expect(seenCredentials).toEqual([
+      testCredential("old"),
+      testCredential("new"),
+    ]);
+    await expect(registry.activateStored(account, context)).resolves.toBe(
+      first,
+    );
+    expect(seenCredentials).toHaveLength(2);
+  });
+
   it("loads two isolated clients for one Agent without exposing credentials", async () => {
     const accounts = parseReliablePluginConfig({
       accounts: [
